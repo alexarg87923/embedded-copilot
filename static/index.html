@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Test Interface</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @keyframes typing {
+            0%, 60%, 100% { opacity: 0.3; }
+            30% { opacity: 1; }
+        }
+        .typing-dot { animation: typing 1.4s infinite; }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    </style>
+</head>
+<body class="bg-gray-50 h-screen flex flex-col">
+    <!-- Header -->
+    <div class="bg-white border-b border-gray-200 px-8 py-4 text-center">
+        <h1 class="text-2xl font-semibold text-gray-800">LLM Test Interface</h1>
+    </div>
+
+    <!-- Chat Container -->
+    <div class="flex-1 flex flex-col max-w-4xl mx-auto w-full px-4">
+        <!-- Messages -->
+        <div id="messages" class="flex-1 overflow-y-auto py-8 flex flex-col gap-4">
+            <!-- Empty State -->
+            <div id="emptyState" class="flex-1 flex flex-col justify-center items-center text-gray-500 text-center px-8">
+                <h2 class="text-2xl font-medium text-gray-700 mb-2">Start a conversation</h2>
+                <p class="text-lg mb-8">Type a message below to test the LLM</p>
+                <div class="flex flex-wrap gap-3 justify-center max-w-2xl">
+                    <button onclick="fillInput('Hello, how are you?')" 
+                            class="bg-white border border-gray-300 rounded-lg px-4 py-3 hover:border-blue-500 hover:bg-blue-50 transition-colors text-sm">
+                        Hello, how are you?
+                    </button>
+                    <button onclick="fillInput('What is the capital of France?')" 
+                            class="bg-white border border-gray-300 rounded-lg px-4 py-3 hover:border-blue-500 hover:bg-blue-50 transition-colors text-sm">
+                        What is the capital of France?
+                    </button>
+                    <button onclick="fillInput('Write a short poem about coding')" 
+                            class="bg-white border border-gray-300 rounded-lg px-4 py-3 hover:border-blue-500 hover:bg-blue-50 transition-colors text-sm">
+                        Write a short poem about coding
+                    </button>
+                    <button onclick="fillInput('Explain quantum physics simply')" 
+                            class="bg-white border border-gray-300 rounded-lg px-4 py-3 hover:border-blue-500 hover:bg-blue-50 transition-colors text-sm">
+                        Explain quantum physics simply
+                    </button>
+                </div>
+            </div>
+
+            <!-- Typing Indicator -->
+            <div id="typingIndicator" class="hidden items-center gap-2 bg-white border border-gray-200 rounded-2xl px-6 py-4 max-w-xs text-gray-600">
+                <div class="flex gap-1">
+                    <span class="w-2 h-2 bg-gray-400 rounded-full typing-dot"></span>
+                    <span class="w-2 h-2 bg-gray-400 rounded-full typing-dot"></span>
+                    <span class="w-2 h-2 bg-gray-400 rounded-full typing-dot"></span>
+                </div>
+                <span>Thinking...</span>
+            </div>
+        </div>
+
+        <!-- Input Container -->
+        <div class="bg-white border-t border-gray-200 px-8 py-4 flex gap-4 items-end">
+            <textarea id="messageInput" 
+                      placeholder="Type your message here..."
+                      rows="1"
+                      class="flex-1 min-h-10 max-h-32 px-4 py-3 border border-gray-300 rounded-lg resize-none focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"></textarea>
+            <button id="sendButton" 
+                    onclick="sendMessage()"
+                    class="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium">
+                Send
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const messagesContainer = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const emptyState = document.getElementById('emptyState');
+        const typingIndicator = document.getElementById('typingIndicator');
+
+        // Auto-resize textarea
+        messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 128) + 'px';
+        });
+
+        // Send on Enter (but not Shift+Enter)
+        messageInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        function fillInput(text) {
+            messageInput.value = text;
+            messageInput.focus();
+        }
+
+        function addMessage(content, isUser = false) {
+            if (!emptyState.classList.contains('hidden')) {
+                emptyState.classList.add('hidden');
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = isUser 
+                ? 'bg-blue-500 text-white self-end ml-auto max-w-xs sm:max-w-md lg:max-w-lg px-6 py-4 rounded-2xl whitespace-pre-wrap'
+                : 'bg-white border border-gray-200 self-start max-w-xs sm:max-w-md lg:max-w-lg px-6 py-4 rounded-2xl text-gray-800 whitespace-pre-wrap';
+            messageDiv.textContent = content;
+            
+            messagesContainer.insertBefore(messageDiv, typingIndicator);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function showTyping() {
+            typingIndicator.classList.remove('hidden');
+            typingIndicator.classList.add('flex');
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function hideTyping() {
+            typingIndicator.classList.add('hidden');
+            typingIndicator.classList.remove('flex');
+        }
+
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            addMessage(message, true);
+            
+            messageInput.value = '';
+            messageInput.style.height = 'auto';
+            sendButton.disabled = true;
+            
+            showTyping();
+
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+
+                const data = await response.json();
+                hideTyping();
+                addMessage(data.response || 'No response received');
+                
+            } catch (error) {
+                hideTyping();
+                addMessage('Error: Could not connect to the server. Make sure your FastAPI backend is running.');
+                console.error('Error:', error);
+            }
+
+            sendButton.disabled = false;
+            messageInput.focus();
+        }
+    </script>
+</body>
+</html>
