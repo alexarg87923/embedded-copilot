@@ -3,9 +3,12 @@ from typing import Optional
 from fastapi import HTTPException
 import asyncio
 import logging
-from google.ai.generativelanguage import GenerativeModel
-import google.ai.generativelanguage as glm
 
+from google.adk.agents import LlmAgent
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types
 
 
 class AIProvider(ABC):
@@ -15,72 +18,54 @@ class AIProvider(ABC):
 
 
 class ClaudeProvider(AIProvider):
-    def __init__(self, api_key: str, model_name: str = "claude-3-sonnet-20240229"):
-        """
-        Initialize Claude provider via Google ADK.
-        
-        Args:
-            api_key: Your Anthropic API key
-            model_name: Claude model (default: claude-3-sonnet-20240229)
-        """
+    def __init__(self, api_key: str, model_name: str = "anthropic/claude-3-5-sonnet-latest"):
         self.api_key = api_key
         self.model_name = model_name
+        self.session_service = InMemorySessionService()
         self._configure_client()
-    
+
     def _configure_client(self):
-        """Configure the Claude client via ADK"""
         try:
-            glm.configure(
-                api_key=self.api_key,
-                provider="anthropic",
+            self.agent = LlmAgent(
+                model=LiteLlm(model=self.model_name),
+                name="claude_agent",
+                instruction="You are an assistant powered by Claude.",
+                generate_content_config=types.GenerateContentConfig(
+                    temperature=0.7,
+                    max_output_tokens=500,
+                ),
             )
-            self.model = GenerativeModel(self.model_name)
-            logging.info(f"Claude configured with model: {self.model_name}")
+            self.runner = Runner(agent=self.agent, app_name="my_app", session_service=self.session_service)
+            logging.info(f"Claude configured with ADK (model={self.model_name})")
         except Exception as e:
-            logging.error(f"Failed to configure Claude: {e}")
+            logging.error(f"Failed to configure Claude (ADK): {e}")
             raise HTTPException(status_code=500, detail="Failed to initialize Claude provider")
-    
+
     async def generate_response(
-        self, 
-        message: str, 
-        temperature: float = 0.7,
-        max_tokens: Optional[int] = 500,
+        self,
+        message: str,
         **kwargs
     ) -> str:
-        """
-        Generate response from Claude via ADK
-        """
         try:
-            generation_config = {
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            }
-            
+            session_id = "session1"
+            user_id = "user1"
+
+            await self.session_service.create_session(app_name="my_app", user_id=user_id, session_id=session_id)
+
+            content = types.Content(role="user", parts=[types.Part(text=message)])
             loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, 
-                lambda: self.model.generate_content(
-                    message,
-                    generation_config=generation_config
+            events = await loop.run_in_executor(
+                None,
+                lambda: self.runner.run(
+                    user_id=user_id,
+                    session_id=session_id,
+                    new_message=content
                 )
             )
-            
-            return response.text
+            for event in events:
+                if event.is_final_response() and event.content:
+                    return event.content.parts[0].text
+            return "[No response]"
         except Exception as e:
-            logging.error(f"Error generating response from Claude: {e}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Claude generation error: {str(e)}"
-            )
-
-def create_ai_provider(provider_type: str = "claude", **config) -> AIProvider:
-    if provider_type.lower() == "claude":
-        api_key = config.get("api_key")
-        if not api_key:
-            raise ValueError("Claude requires 'api_key' in config")
-        
-        model_name = config.get("model_name", "claude-3-sonnet-20240229")
-        return ClaudeProvider(api_key=api_key, model_name=model_name)
-    
-    else:
-        raise ValueError(f"Unsupported provider type: {provider_type}")
+            logging.error(f"Claude (ADK) error: {e}")
+            raise HTTPException(status_code=500, detail=f"Claude generation error: {str(e)}")
