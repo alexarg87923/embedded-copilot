@@ -39,7 +39,6 @@ async def chat_endpoint(
   try:
     response = await ai.generate_response(message=chat_message.message)
     return {"response": response}
-
   except HTTPException:
       raise
   except Exception as e:

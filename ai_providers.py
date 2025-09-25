@@ -1,18 +1,19 @@
-import asyncio
-import logging
-import uuid
 from abc import ABC, abstractmethod
 from fastapi import HTTPException
-
-import litellm
-litellm._turn_on_debug()
-
+import asyncio
+import logging
+from pathlib import Path
+from litellm.exceptions import InternalServerError
+import uuid
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from litellm.exceptions import InternalServerError
+import litellm
+
+litellm._turn_on_debug()
 
 class AIProvider(ABC):
     @abstractmethod
@@ -24,17 +25,34 @@ class ClaudeProvider(AIProvider):
         self.api_key = api_key
         self.model_name = model_name
         self.session_service = InMemorySessionService()
+        self.system_prompt = self._load_system_prompt()
         self._configure_client()
+
+    def _load_system_prompt(self) -> str:
+        """Load system prompt from ./prompts/system_prompt file"""
+        try:
+            prompt_path = Path("./prompts/system_prompt")
+            if prompt_path.exists():
+                with open(prompt_path, 'r', encoding='utf-8') as f:
+                    prompt = f.read().strip()
+                    logging.info(f"Loaded system prompt from {prompt_path}")
+                    return prompt
+            else:
+                logging.warning(f"System prompt file not found at {prompt_path}, using default")
+                return "You are an assistant powered by Claude."
+        except Exception as e:
+            logging.error(f"Failed to load system prompt: {e}")
+            return "You are an assistant powered by Claude."
 
     def _configure_client(self):
         try:
             self.agent = LlmAgent(
                 model=LiteLlm(model=self.model_name),
                 name="claude_agent",
-                instruction="You are an assistant powered by Claude.",
+                instruction=self.system_prompt,
                 generate_content_config=types.GenerateContentConfig(
                     temperature=0.7,
-                    max_output_tokens=500,
+                    max_output_tokens=2048,
                 ),
             )
             self.runner = Runner(agent=self.agent, app_name="my_app", session_service=self.session_service)
@@ -56,7 +74,6 @@ class ClaudeProvider(AIProvider):
 
             content = types.Content(role="user", parts=[types.Part(text=message)])
             loop = asyncio.get_event_loop()
-
             try:
                 events = await loop.run_in_executor(
                     None,
@@ -69,7 +86,6 @@ class ClaudeProvider(AIProvider):
             except InternalServerError as e:
                 logging.error(f"Anthropic 500 error: {e}")
                 raise HTTPException(status_code=502, detail="Claude backend error, please retry")
-
             for event in events:
                 if event.is_final_response() and event.content:
                     return event.content.parts[0].text
