@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import os
 from ai_providers import create_ai_provider, AIProvider
+from dotenv import load_dotenv
+from typing import Optional
 
 app = FastAPI()
 
@@ -54,28 +56,3 @@ async def chat_endpoint(
             status_code=500, 
             detail=f"Unexpected error: {str(e)}"
         )
-
-# Optional: Health check endpoint
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "ai_provider": "claude"}
-
-
-# Example usage with different configurations
-"""
-# For different models:
-ai_provider = create_ai_provider(
-    provider_type="claude",
-    api_key="your-key",
-    model_name="claude-3-5-haiku-20241022"  # For faster responses
-)
-
-# You could also easily add other providers:
-class GoogleAIProvider(AIProvider):
-    # Implementation for Google Gemini API
-    pass
-
-class OpenAIProvider(AIProvider):
-    # Implementation for OpenAI API
-    pass
-"""

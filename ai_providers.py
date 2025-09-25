@@ -1,97 +1,85 @@
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
-import anthropic
+from typing import Optional
 from fastapi import HTTPException
 import asyncio
 import logging
+from google.ai.generativelanguage import GenerativeModel
+import google.ai.generativelanguage as glm
 
-# Abstract base class for AI providers
+
+
 class AIProvider(ABC):
     @abstractmethod
     async def generate_response(self, message: str, **kwargs) -> str:
         pass
 
+
 class ClaudeProvider(AIProvider):
-    def __init__(self, api_key: str, model_name: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, api_key: str, model_name: str = "claude-3-sonnet-20240229"):
         """
-        Initialize Claude provider
+        Initialize Claude provider via Google ADK.
         
         Args:
             api_key: Your Anthropic API key
-            model_name: Model to use (default: claude-3-5-sonnet-20241022)
+            model_name: Claude model (default: claude-3-sonnet-20240229)
         """
         self.api_key = api_key
         self.model_name = model_name
         self._configure_client()
     
     def _configure_client(self):
-        """Configure the Anthropic client"""
+        """Configure the Claude client via ADK"""
         try:
-            self.client = anthropic.AsyncAnthropic(api_key=self.api_key)
+            glm.configure(
+                api_key=self.api_key,
+                provider="anthropic",
+            )
+            self.model = GenerativeModel(self.model_name)
             logging.info(f"Claude configured with model: {self.model_name}")
         except Exception as e:
             logging.error(f"Failed to configure Claude: {e}")
-            raise HTTPException(status_code=500, detail="Failed to initialize AI provider")
+            raise HTTPException(status_code=500, detail="Failed to initialize Claude provider")
     
     async def generate_response(
         self, 
         message: str, 
         temperature: float = 0.7,
-        max_tokens: Optional[int] = 1024,
+        max_tokens: Optional[int] = 500,
         **kwargs
     ) -> str:
         """
-        Generate response using Claude
-        
-        Args:
-            message: User's message
-            temperature: Sampling temperature (0-1)
-            max_tokens: Maximum tokens to generate
-            **kwargs: Additional parameters
-            
-        Returns:
-            Generated response string
+        Generate response from Claude via ADK
         """
         try:
-            response = await self.client.messages.create(
-                model=self.model_name,
-                max_tokens=max_tokens or 1024,
-                temperature=temperature,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": message
-                    }
-                ]
+            generation_config = {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
+            
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None, 
+                lambda: self.model.generate_content(
+                    message,
+                    generation_config=generation_config
+                )
             )
             
-            return response.content[0].text
-            
+            return response.text
         except Exception as e:
-            logging.error(f"Error generating response: {e}")
+            logging.error(f"Error generating response from Claude: {e}")
             raise HTTPException(
                 status_code=500, 
-                detail=f"Failed to generate response: {str(e)}"
+                detail=f"Claude generation error: {str(e)}"
             )
 
-# Factory function for easy dependency injection
 def create_ai_provider(provider_type: str = "claude", **config) -> AIProvider:
-    """
-    Factory function to create AI providers
-    
-    Args:
-        provider_type: Type of provider ("claude", etc.)
-        **config: Provider-specific configuration
-        
-    Returns:
-        AIProvider instance
-    """
     if provider_type.lower() == "claude":
         api_key = config.get("api_key")
         if not api_key:
             raise ValueError("Claude requires 'api_key' in config")
         
-        model_name = config.get("model_name", "claude-3-5-sonnet-20241022")
+        model_name = config.get("model_name", "claude-3-sonnet-20240229")
         return ClaudeProvider(api_key=api_key, model_name=model_name)
     
     else:
