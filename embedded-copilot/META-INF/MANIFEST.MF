@@ -1,0 +1,8 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: Embedded-copilot
+Bundle-SymbolicName: embedded-copilot;singleton:=true
+Bundle-Version: 1.0.0.qualifier
+Require-Bundle: org.eclipse.ui, org.eclipse.core.runtime
+Automatic-Module-Name: embedded.copilot
+Bundle-RequiredExecutionEnvironment: JavaSE-21
