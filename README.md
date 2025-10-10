@@ -27,12 +27,12 @@ A simple chat interface for testing and experimenting with different prompts and
 ## Architecture
 
 ```
-┌─────────────────────────────────┐
-│   Eclipse IDE                   │
-│  ┌───────────────────────────┐  │
-│  │  Embedded Copilot Plugin  │  │  ← Frontend (UI/UX)
-│  │  (./embedded-copilot)     │  │
-│  └───────────┬───────────────┘  │
+┌──────────────────────────────────┐
+│   Eclipse IDE                    │
+│  ┌───────────────────────────┐   │
+│  │  Embedded Copilot Plugin  │   │  ← Frontend (UI/UX)
+│  │  (./embedded-copilot)     │   │
+│  └───────────┬───────────────┘   │
 │              │                   │
 └──────────────┼───────────────────┘
                │
@@ -40,10 +40,10 @@ A simple chat interface for testing and experimenting with different prompts and
                │
 ┌──────────────▼───────────────────┐
 │   Cline Engine                   │
-│  ┌───────────────────────────┐  │
-│  │  Standalone Server + CLI  │  │  ← Backend (AI Engine)
-│  │  (./cline)                │  │
-│  └───────────────────────────┘  │
+│  ┌───────────────────────────┐   │
+│  │  Standalone Server + CLI  │   │  ← Backend (AI Engine)
+│  │  (./cline)                │   │
+│  └───────────────────────────┘   │
 └──────────────────────────────────┘
 
      Testing & Development
