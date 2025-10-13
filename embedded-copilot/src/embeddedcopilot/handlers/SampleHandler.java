@@ -4,6 +4,7 @@ import org.eclipse.core.commands.AbstractHandler;
 import org.eclipse.core.commands.ExecutionEvent;
 import org.eclipse.core.commands.ExecutionException;
 import org.eclipse.ui.IWorkbenchWindow;
+import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.views.WorkbenchViewerSetup;
 import org.eclipse.ui.handlers.HandlerUtil;
 import org.eclipse.ui.IEditorPart;
@@ -24,26 +25,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import org.eclipse.swt.widgets.Composite;
+import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.SWT;
+import org.eclipse.ui.part.ViewPart;
 
 public class SampleHandler extends AbstractHandler {
 
 	@Override
 	public Object execute(ExecutionEvent event) throws ExecutionException {
-		IWorkbenchWindow window = HandlerUtil.getActiveWorkbenchWindowChecked(event);
-		IEditorPart test = HandlerUtil.getActiveEditor(event);
-//		ArrayList contexts = new ArrayList<>(HandlerUtil.getActiveContexts(event));
-//		for (int i = 0; i < contexts.size();i++) {
-//			MessageDialog.openInformation(
-//					window.getShell(),
-//					"Embedded-copilot",
-//					contexts.get(i).toString());	
-//		}
-		getAllParts();
-
-//		MessageDialog.openInformation(
-//				window.getShell(),
-//				"Embedded-copilot",
-//				"Hello, Eclipse world");
+		IWorkbenchPage page = PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage();
+		try {
+			page.showView("embeddedcopilot.views.SampleView");
+		} catch (PartInitException e) {
+			e.printStackTrace();
+		}
 		return null;
 	}
 

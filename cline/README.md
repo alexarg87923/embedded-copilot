@@ -5,6 +5,9 @@ AI-powered coding assistant that can be run locally through CLI.
 ## Prerequisites
 
 - **Go** - [https://go.dev/doc/install](https://go.dev/doc/install)
+
+export PATH="$PATH:/Users/alex/go/bin"
+
 - **Node.js** - [https://nodejs.org/en/download](https://nodejs.org/en/download)
 - **Claude API Key** from Anthropic
 
