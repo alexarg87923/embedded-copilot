@@ -13,3 +13,7 @@ echo '🖥️ cli/bin/cline built'
 GO111MODULE=on go build -o bin/cline-host ./cmd/cline-host
 
 echo '🖥️ cli/bin/cline-host built'
+
+mkdir -p ../../embedded-copilot/bin
+cp bin/cline-host ../../embedded-copilot/bin/
+cp bin/cline ../../embedded-copilot/bin/
