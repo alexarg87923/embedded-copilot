@@ -43,7 +43,10 @@ import org.osgi.framework.FrameworkUtil;
 import org.osgi.framework.Bundle;
 import org.eclipse.core.runtime.FileLocator;
 import java.net.URL;
-
+import java.util.Arrays;
+import java.io.File;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 public class SampleView extends ViewPart {
 	public static final String ID = "embeddedcopilot.views.SampleView";
@@ -55,10 +58,10 @@ public class SampleView extends ViewPart {
 	private Composite historyListContainer;
 	private ScrolledComposite historyScrolled;
 	private Text inputField;
-
+	private String activeTaskId = null;
 	private List<ChatHistory> chatHistories = new ArrayList<>();
 	private int chatCounter = 0;
-
+	private String cliBinaryDir = null;
 	private class ChatHistory {
 		String title;
 		List<ChatMessage> messages = new ArrayList<>();
@@ -121,14 +124,15 @@ public class SampleView extends ViewPart {
 		inputField.addKeyListener(new KeyAdapter() {
 			@Override
 			public void keyPressed(KeyEvent e) {
-				if (tabFolder.getItemCount() == 0 && !inputField.getText().isEmpty()) {
-					createNewChat();
-				}
-
 				if (e.keyCode == SWT.CR || e.keyCode == SWT.KEYPAD_CR) {
 					if ((e.stateMask & SWT.SHIFT) == 0) {
 						e.doit = false;
-						sendMessage();
+
+						if (tabFolder.getItemCount() == 0 && !inputField.getText().isEmpty()) {
+							createNewChat();
+						} else {
+							sendMessage();
+						}
 					}
 				}
 			}
@@ -159,7 +163,7 @@ public class SampleView extends ViewPart {
 		historyScrolled.setExpandHorizontal(true);
 		historyScrolled.setExpandVertical(true);
 		historyScrolled.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
-		
+
 		historyListContainer = new Composite(historyScrolled, SWT.NONE);
 		GridLayout listLayout = new GridLayout(1, false);
 		listLayout.marginWidth = 10;
@@ -167,82 +171,83 @@ public class SampleView extends ViewPart {
 		listLayout.verticalSpacing = 5;
 		historyListContainer.setLayout(listLayout);
 		historyListContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
-		
+
 		historyScrolled.setContent(historyListContainer);
 	}
 	
 	private void loadTaskHistoryFromCline() {
-	    chatHistories.clear();
-	    addPlaceholder("Loading task history...");
-	    refreshHistoryView();
+		chatHistories.clear();
+		addPlaceholder("Loading task history...");
+		refreshHistoryView();
 
-	    new Thread(() -> {
-	        try {
-	            String cliBinaryPath = extractCliBinary();
+		new Thread(() -> {
+			try {
+				String output = executeClineCommand("task", "list");
+				System.out.printf("Output from command: %s", output);
 
-	            ProcessBuilder pb = new ProcessBuilder(cliBinaryPath, "task", "list");
-	            pb.redirectErrorStream(true);
-	            Process proc = pb.start();
+				List<ChatHistory> parsed = parseClineTaskHistory(output);
 
-	            StringBuilder out = new StringBuilder();
-	            try (BufferedReader br = new BufferedReader(
-	                    new InputStreamReader(proc.getInputStream()))) {
-	                String line;
-	                while ((line = br.readLine()) != null) {
-	                    out.append(line).append("\n");
-	                }
-	            }
-	            proc.waitFor();
+				display.asyncExec(() -> {
+					chatHistories.clear();
+					if (parsed.isEmpty()) {
+						addPlaceholder("No tasks found.");
+					} else {
+						chatHistories.addAll(parsed);
+					}
+					refreshHistoryView();
+				});
 
-	            System.out.printf("Output from command: %s", out);
-
-	            List<ChatHistory> parsed = parseClineTaskHistory(out.toString());
-
-	            display.asyncExec(() -> {
-	                chatHistories.clear();
-	                if (parsed.isEmpty()) {
-	                    addPlaceholder("No tasks found.");
-	                } else {
-	                    chatHistories.addAll(parsed);
-	                }
-	                refreshHistoryView();
-	            });
-
-	        } catch (Exception ex) {
-	            ex.printStackTrace();
-	            display.asyncExec(() -> {
-	                chatHistories.clear();
-	                addPlaceholder("Failed to load history: " + ex.getMessage());
-	                refreshHistoryView();
-	            });
-	        }
-	    }, "ClineTaskListThread").start();
+			} catch (Exception ex) {
+				ex.printStackTrace();
+				display.asyncExec(() -> {
+					chatHistories.clear();
+					addPlaceholder("Failed to load history: " + ex.getMessage());
+					refreshHistoryView();
+				});
+			}
+		}, "ClineTaskListThread").start();
 	}
 
 	private String extractCliBinary() throws Exception {
-	    String binaryName = "cline";
+	    if (cliBinaryDir != null) {
+	        return cliBinaryDir + "/cline";
+	    }
 
 	    Bundle bundle = FrameworkUtil.getBundle(getClass());
 	    if (bundle == null) {
 	        throw new Exception("Could not get OSGi bundle");
 	    }
 
-	    URL bundleUrl = bundle.getEntry("bin/" + binaryName);
-	    if (bundleUrl == null) {
-	        throw new Exception("Binary not found in bundle: bin/" + binaryName);
+	    Path tempDir = Files.createTempDirectory("cline-binaries");
+	    cliBinaryDir = tempDir.toString();
+	    
+	    System.out.println("[extractCliBinary] Created temp directory: " + cliBinaryDir);
+
+	    URL clineUrl = bundle.getEntry("bin/cline");
+	    if (clineUrl == null) {
+	        throw new Exception("Binary not found in bundle: bin/cline");
 	    }
+	    URL clineFileUrl = FileLocator.toFileURL(clineUrl);
+	    InputStream clineIn = clineFileUrl.openStream();
+	    Path clinePath = tempDir.resolve("cline");
+	    Files.copy(clineIn, clinePath, StandardCopyOption.REPLACE_EXISTING);
+	    clineIn.close();
+	    clinePath.toFile().setExecutable(true);
+	    System.out.println("[extractCliBinary] Extracted cline to: " + clinePath);
 
-	    URL fileUrl = FileLocator.toFileURL(bundleUrl);
+	    URL hostUrl = bundle.getEntry("bin/cline-host");
+	    if (hostUrl == null) {
+	        throw new Exception("Binary not found in bundle: bin/cline-host");
+	    }
+	    URL hostFileUrl = FileLocator.toFileURL(hostUrl);
+	    InputStream hostIn = hostFileUrl.openStream();
+	    Path hostPath = tempDir.resolve("cline-host");
+	    Files.copy(hostIn, hostPath, StandardCopyOption.REPLACE_EXISTING);
+	    hostIn.close();
+	    hostPath.toFile().setExecutable(true);
+	    System.out.println("[extractCliBinary] Extracted cline-host to: " + hostPath);
 
-	    InputStream in = fileUrl.openStream();
-
-	    Path tempBinary = Files.createTempFile("cline", "");
-	    Files.copy(in, tempBinary, StandardCopyOption.REPLACE_EXISTING);
-	    in.close();
-
-	    tempBinary.toFile().setExecutable(true);
-
-	    return tempBinary.toString();
+	    return clinePath.toString();
 	}
 
 	private void addPlaceholder(String msg) {
@@ -397,36 +402,341 @@ public class SampleView extends ViewPart {
 
 		CTabItem item = new CTabItem(tabFolder, SWT.CLOSE);
 		item.setText(history.title);
-		
+
 		Composite chatComposite = createChatComposite(tabFolder);
 		item.setControl(chatComposite);
 
 		for (ChatMessage msg : history.messages) {
 			addMessageToComposite(chatComposite, msg.text, msg.isUser);
 		}
-		
+
 		tabFolder.setSelection(item);
 		mainContainer.layout(true, true);
 		inputField.setFocus();
 	}
+
+	private String createClineTask(String message) throws Exception {
+	    System.out.println("[createClineTask] Starting with message: " + message);
+
+	    try {
+	        String output = executeClineCommand(
+	            "task",
+	            "new",
+	            message,
+	            "-s", "act-mode-api-provider=anthropic",
+	            "-s", "act-mode-api-model-id=claude-sonnet-4.5"
+	        );
+
+	        System.out.println("[createClineTask] Output from cline task new: " + output);
+
+	        String taskId = parseTaskIdFromOutput(output);
+	        System.out.println("[createClineTask] Parsed task ID: " + taskId);
+
+	        if (taskId == null) {
+	            throw new Exception("Failed to parse task ID from output: " + output);
+	        }
+
+	        return taskId;
+	    } catch (Exception ex) {
+	        System.out.println("[createClineTask] Exception in createClineTask: " + ex.getMessage());
+	        ex.printStackTrace();
+	        throw ex;
+	    }
+	}
+
+	private String parseTaskIdFromOutput(String output) {
+	    System.out.println("[parseTaskIdFromOutput] Parsing output: " + output);
+
+	    String[] lines = output.split("\\R");
+	    System.out.println("[parseTaskIdFromOutput] Split into " + lines.length + " lines");
+
+	    for (int i = 0; i < lines.length; i++) {
+	        String line = lines[i];
+	        System.out.println("[parseTaskIdFromOutput] Line " + i + ": " + line);
+	        
+	        if (line.contains("Task created successfully with ID:")) {
+	            String[] parts = line.split(":");
+	            if (parts.length >= 2) {
+	                String taskId = parts[parts.length - 1].trim();
+	                System.out.println("[parseTaskIdFromOutput] Found task ID: " + taskId);
+	                return taskId;
+	            }
+	        }
+	    }
+
+	    System.out.println("[parseTaskIdFromOutput] No task ID found");
+	    return null;
+	}
+
+	private String executeClineCommand(String... args) throws Exception {
+	    System.out.println("[executeClineCommand] Starting with args: " + Arrays.toString(args));
+
+	    String cliBinaryPath = extractCliBinary();
+	    System.out.println("[executeClineCommand] CLI binary path: " + cliBinaryPath);
+
+	    List<String> command = new ArrayList<>();
+	    command.add(cliBinaryPath);
+	    command.addAll(Arrays.asList(args));
+
+	    System.out.println("[executeClineCommand] Full command: " + command);
+
+	    ProcessBuilder pb = new ProcessBuilder(command);
+
+	    File workingDir = new File(cliBinaryDir);
+	    pb.directory(workingDir);
+	    System.out.println("[executeClineCommand] Working directory: " + workingDir.getAbsolutePath());
+
+	    Map<String, String> env = pb.environment();
+	    if (!env.containsKey("HOME") || env.get("HOME") == null || env.get("HOME").isEmpty()) {
+	        String home = System.getProperty("user.home");
+	        env.put("HOME", home);
+	        System.out.println("[executeClineCommand] Set HOME to: " + home);
+	    }
+
+	    String currentPath = env.get("PATH");
+	    String newPath = cliBinaryDir + File.pathSeparator + (currentPath != null ? currentPath : "");
+	    env.put("PATH", newPath);
+
+	    pb.redirectErrorStream(true);
+
+	    pb.redirectInput(ProcessBuilder.Redirect.PIPE);
+
+	    Process proc = pb.start();
+	    System.out.println("[executeClineCommand] Process started");
+
+	    proc.getOutputStream().close();
+	    System.out.println("[executeClineCommand] Closed stdin");
+
+	    StringBuilder output = new StringBuilder();
+
+	    final boolean[] readComplete = {false};
+	    Thread readerThread = new Thread(() -> {
+	        try (BufferedReader br = new BufferedReader(
+	                new InputStreamReader(proc.getInputStream()))) {
+	            String line;
+	            while ((line = br.readLine()) != null) {
+	                System.out.println("[executeClineCommand OUTPUT] " + line);
+	                output.append(line).append("\n");
+	            }
+	            readComplete[0] = true;
+	            System.out.println("[executeClineCommand] Finished reading output");
+	        } catch (Exception e) {
+	            System.out.println("[executeClineCommand] Error reading: " + e.getMessage());
+	            e.printStackTrace();
+	        }
+	    });
+
+	    readerThread.start();
+
+	    boolean finished = proc.waitFor(10, TimeUnit.SECONDS);
+	    System.out.println("[executeClineCommand] Process finished: " + finished);
+
+	    if (!finished) {
+	        System.out.println("[executeClineCommand] Process timed out, destroying...");
+	        proc.destroyForcibly();
+	        throw new Exception("Command timed out after 10 seconds");
+	    }
+
+	    readerThread.join(2000);
+	    
+	    int exitCode = proc.exitValue();
+	    System.out.println("[executeClineCommand] Process exited with code: " + exitCode);
+	    System.out.println("[executeClineCommand] Output length: " + output.length());
+
+	    return output.toString();
+	}
+
 	
 	private void createNewChat() {
-		historyView.setVisible(false);
-		((GridData) historyView.getLayoutData()).exclude = true;
-		tabFolder.setVisible(true);
-		((GridData) tabFolder.getLayoutData()).exclude = false;
+	    System.out.println("[createNewChat] Starting createNewChat");
+	    String initialMessage = inputField.getText().trim();
+	    System.out.println("[createNewChat] Initial message: " + initialMessage);
+	    
+	    if (initialMessage.isEmpty()) {
+	        System.out.println("[createNewChat] Message is empty, returning");
+	        return;
+	    }
 
-		chatCounter++;
-		CTabItem item = new CTabItem(tabFolder, SWT.CLOSE);
-		item.setText("Chat " + chatCounter);
+	    System.out.println("[createNewChat] Setting up UI...");
+	    historyView.setVisible(false);
+	    ((GridData) historyView.getLayoutData()).exclude = true;
+	    tabFolder.setVisible(true);
+	    ((GridData) tabFolder.getLayoutData()).exclude = false;
 
-		Composite chatComposite = createChatComposite(tabFolder);
-		item.setControl(chatComposite);
+	    chatCounter++;
+	    System.out.println("[createNewChat] Chat counter: " + chatCounter);
+	    CTabItem item = new CTabItem(tabFolder, SWT.CLOSE);
+	    item.setText("Creating chat...");
 
-		addMessageToComposite(chatComposite, "Hello! How can I help you today?", false);
+	    Composite chatComposite = createChatComposite(tabFolder);
+	    item.setControl(chatComposite);
 
-		tabFolder.setSelection(item);
-		mainContainer.layout(true, true);
+	    tabFolder.setSelection(item);
+	    mainContainer.layout(true, true);
+
+	    String messageCopy = initialMessage;
+	    inputField.setText("");
+	    
+	    System.out.println("[createNewChat] Starting background thread...");
+
+	    new Thread(() -> {
+	        try {
+	            System.out.println("[createNewChat Thread] Thread started");
+	            System.out.println("[createNewChat Thread] Creating Cline task...");
+	            String taskId = createClineTask(messageCopy);
+	            System.out.println("[createNewChat Thread] Task created with ID: " + taskId);
+	            activeTaskId = taskId;
+
+	            display.asyncExec(() -> {
+	                System.out.println("[createNewChat Thread asyncExec] Updating UI with task info");
+	                String shortTitle = messageCopy.length() > 30 ?
+	                    messageCopy.substring(0, 30) + "..." : messageCopy;
+	                item.setText(shortTitle);
+
+	                System.out.println("[createNewChat Thread asyncExec] UI updated");
+	            });
+
+	            System.out.println("[createNewChat Thread] About to call followTaskOutput...");
+	            followTaskOutput(chatComposite);
+	            System.out.println("[createNewChat Thread] followTaskOutput completed");
+
+	        } catch (Exception ex) {
+	            System.out.println("[createNewChat Thread] Exception occurred: " + ex.getMessage());
+	            ex.printStackTrace();
+	            display.asyncExec(() -> {
+	                item.setText("Error");
+	                addMessageToComposite(chatComposite, "Failed to create chat: " + ex.getMessage(), false);
+	            });
+	        }
+	    }, "CreateClineTaskThread").start();
+	    
+	    System.out.println("[createNewChat] Method completed, thread running in background");
+	}
+
+	private void followTaskOutput(Composite chatComposite) throws Exception {
+	    System.out.println("[followTaskOutput] Starting to follow task output");
+	    String cliBinaryPath = extractCliBinary();
+
+	    List<String> command = new ArrayList<>();
+	    command.add(cliBinaryPath);
+	    command.add("task");
+	    command.add("follow");
+	    command.add("-o");
+	    command.add("json");
+	    
+	    ProcessBuilder pb = new ProcessBuilder(command);
+	    
+	    File workingDir = new File(cliBinaryDir);
+	    pb.directory(workingDir);
+	    
+	    Map<String, String> env = pb.environment();
+	    if (!env.containsKey("HOME") || env.get("HOME") == null || env.get("HOME").isEmpty()) {
+	        String home = System.getProperty("user.home");
+	        env.put("HOME", home);
+	    }
+	    
+	    String currentPath = env.get("PATH");
+	    String newPath = cliBinaryDir + File.pathSeparator + (currentPath != null ? currentPath : "");
+	    env.put("PATH", newPath);
+	    
+	    pb.redirectErrorStream(true);
+	    pb.redirectInput(ProcessBuilder.Redirect.PIPE);
+	    
+	    Process proc = pb.start();
+	    proc.getOutputStream().close();
+	    System.out.println("[followTaskOutput] Process started");
+
+	    StringBuilder aiMessage = new StringBuilder();
+	    StringBuilder jsonBuffer = new StringBuilder();
+	    boolean isUserMessage = true; // Alternate between user and AI
+	    final boolean[] hasDisplayedAIMessage = {false};
+	    
+	    try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+	        String line;
+	        
+	        System.out.println("[followTaskOutput] Starting to read JSON lines...");
+	        while ((line = reader.readLine()) != null) {
+	            System.out.println("[followTaskOutput] JSON line: " + line);
+	            
+	            jsonBuffer.append(line).append("\n");
+	            
+	            if (line.trim().equals("}")) {
+	                String jsonObject = jsonBuffer.toString();
+	                System.out.println("[followTaskOutput] Complete JSON object: " + jsonObject);
+	                
+	                try {
+	                    String textToAppend = parseJsonEvent(jsonObject);
+	                    
+	                    if (textToAppend != null && !textToAppend.isEmpty()) {
+	                        if (isUserMessage) {
+	                            System.out.println("[followTaskOutput] User message: " + textToAppend);
+	                            String userMsg = textToAppend;
+	                            display.asyncExec(() -> {
+	                                addMessageToComposite(chatComposite, userMsg, true);
+	                            });
+	                            isUserMessage = false;
+	                        } else {
+	                            System.out.println("[followTaskOutput] AI message: " + textToAppend);
+	                            aiMessage.append(textToAppend).append("\n\n");
+	                            
+	                            String messageSoFar = aiMessage.toString();
+	                            display.asyncExec(() -> {
+	                                Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
+	                                Control[] children = chatContainer.getChildren();
+	                                
+	                                if (hasDisplayedAIMessage[0] && children.length > 0) {
+	                                    Control lastChild = children[children.length - 1];
+	                                    if (lastChild instanceof Composite) {
+	                                        lastChild.dispose();
+	                                    }
+	                                }
+	                                
+	                                addMessageToComposite(chatComposite, messageSoFar, false);
+	                                hasDisplayedAIMessage[0] = true;
+	                            });
+	                            
+	                            isUserMessage = true;
+	                        }
+	                    }
+	                } catch (Exception e) {
+	                    System.out.println("[followTaskOutput] Error parsing JSON: " + e.getMessage());
+	                }
+	                
+	                jsonBuffer = new StringBuilder();
+	            }
+	        }
+	    }
+	    
+	    proc.waitFor();
+	    System.out.println("[followTaskOutput] Process completed");
+	}
+
+	private String parseJsonEvent(String jsonObject) {
+	    // Check if this is a "say" event with "text" type
+	    if (jsonObject.contains("\"type\": \"say\"") && jsonObject.contains("\"say\": \"text\"")) {
+	        // Extract text field using simple string parsing
+	        int textStart = jsonObject.indexOf("\"text\": \"");
+	        if (textStart != -1) {
+	            textStart += 9; // length of "\"text\": \""
+	            int textEnd = jsonObject.indexOf("\"", textStart);
+	            
+	            // Handle escaped quotes
+	            while (textEnd > 0 && jsonObject.charAt(textEnd - 1) == '\\') {
+	                textEnd = jsonObject.indexOf("\"", textEnd + 1);
+	            }
+	            
+	            if (textEnd != -1) {
+	                String text = jsonObject.substring(textStart, textEnd);
+	                // Unescape JSON string
+	                text = text.replace("\\n", "\n")
+	                          .replace("\\\"", "\"")
+	                          .replace("\\\\", "\\");
+	                return text;
+	            }
+	        }
+	    }
+	    
+	    return null;
 	}
 
 	private Composite createChatComposite(Composite parent) {
@@ -495,52 +805,55 @@ public class SampleView extends ViewPart {
 	}
 
 	private void addMessageToComposite(Composite chatComposite, String text, boolean isUser) {
-		ScrolledComposite scrolled = (ScrolledComposite) chatComposite.getData("scrolled");
-		Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
+	    ScrolledComposite scrolled = (ScrolledComposite) chatComposite.getData("scrolled");
+	    Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
 
-		Composite messageContainer = new Composite(chatContainer, SWT.NONE);
-		GridLayout messageLayout = new GridLayout(1, false);
-		messageLayout.marginWidth = 0;
-		messageLayout.marginHeight = 0;
-		messageLayout.verticalSpacing = 5;
-		messageContainer.setLayout(messageLayout);
-		messageContainer.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
-		messageContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+	    Composite messageContainer = new Composite(chatContainer, SWT.NONE);
+	    GridLayout messageLayout = new GridLayout(1, false);
+	    messageLayout.marginWidth = 0;
+	    messageLayout.marginHeight = 0;
+	    messageLayout.verticalSpacing = 5;
+	    messageContainer.setLayout(messageLayout);
+	    messageContainer.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+	    messageContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
 
-		Label senderLabel = new Label(messageContainer, SWT.NONE);
-		senderLabel.setText(isUser ? "You" : "AI Assistant");
-		senderLabel.setForeground(display.getSystemColor(SWT.COLOR_DARK_GRAY));
-		senderLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
-		senderLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+	    Label senderLabel = new Label(messageContainer, SWT.NONE);
+	    senderLabel.setText(isUser ? "You" : "AI Assistant");
+	    senderLabel.setForeground(display.getSystemColor(SWT.COLOR_DARK_GRAY));
+	    senderLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+	    senderLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
 
-		Composite bubble = new Composite(messageContainer, SWT.NONE);
-		GridLayout bubbleLayout = new GridLayout(1, false);
-		bubbleLayout.marginWidth = 12;
-		bubbleLayout.marginHeight = 10;
-		bubble.setLayout(bubbleLayout);
-		bubble.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+	    Composite bubble = new Composite(messageContainer, SWT.NONE);
+	    GridLayout bubbleLayout = new GridLayout(1, false);
+	    bubbleLayout.marginWidth = 12;
+	    bubbleLayout.marginHeight = 10;
+	    bubble.setLayout(bubbleLayout);
+	    bubble.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
 
-		Color bubbleColor;
-		if (isUser) {
-			bubbleColor = new Color(display, 230, 240, 255);
-		} else {
-			bubbleColor = new Color(display, 245, 245, 245);
-		}
-		bubble.setBackground(bubbleColor);
+	    Color bubbleColor;
+	    if (isUser) {
+	        bubbleColor = new Color(display, 230, 240, 255);
+	    } else {
+	        bubbleColor = new Color(display, 245, 245, 245);
+	    }
+	    bubble.setBackground(bubbleColor);
 
-		StyledText messageText = new StyledText(bubble, SWT.WRAP | SWT.READ_ONLY);
-		messageText.setText(text);
-		messageText.setBackground(bubbleColor);
-		messageText.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+	    StyledText messageText = new StyledText(bubble, SWT.WRAP | SWT.READ_ONLY);
+	    messageText.setText(text);
+	    messageText.setBackground(bubbleColor);
+	    messageText.setWordWrap(true);
+	    GridData textData = new GridData(SWT.FILL, SWT.CENTER, true, false);
+	    textData.widthHint = 0;
+	    messageText.setLayoutData(textData);
 
-		bubble.addDisposeListener(e -> bubbleColor.dispose());
+	    bubble.addDisposeListener(e -> bubbleColor.dispose());
 
-		chatContainer.layout(true, true);
-		scrolled.setMinSize(chatContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
-		
-		Display.getDefault().asyncExec(() -> {
-			scrolled.setOrigin(0, chatContainer.getSize().y);
-		});
+	    chatContainer.layout(true, true);
+	    scrolled.setMinSize(chatContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
+
+	    Display.getDefault().asyncExec(() -> {
+	        scrolled.setOrigin(0, chatContainer.getSize().y);
+	    });
 	}
 
 	@Override
