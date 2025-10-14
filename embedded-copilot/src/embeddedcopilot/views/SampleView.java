@@ -44,6 +44,7 @@ import org.osgi.framework.Bundle;
 import org.eclipse.core.runtime.FileLocator;
 import java.net.URL;
 
+
 public class SampleView extends ViewPart {
 	public static final String ID = "embeddedcopilot.views.SampleView";
 
