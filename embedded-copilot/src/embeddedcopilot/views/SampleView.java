@@ -776,32 +776,54 @@ public class SampleView extends ViewPart {
 	}
 
 	private void sendMessage() {
-		String message = inputField.getText().trim();
-		if (message.isEmpty()) {
-			return;
-		}
+	    String message = inputField.getText().trim();
+	    if (message.isEmpty()) {
+	        return;
+	    }
 
-		if (tabFolder.getItemCount() == 0) {
-			createNewChat();
-		}
+	    if (tabFolder.getItemCount() == 0) {
+	        createNewChat();
+	        return;
+	    }
 
-		CTabItem activeTab = tabFolder.getSelection();
-		if (activeTab == null) return;
+	    CTabItem activeTab = tabFolder.getSelection();
+	    if (activeTab == null) return;
 
-		Composite chatComposite = (Composite) activeTab.getControl();
+	    Composite chatComposite = (Composite) activeTab.getControl();
 
-		addMessageToComposite(chatComposite, message, true);
+	    addMessageToComposite(chatComposite, message, true);
 
-		if (activeTab.getText().startsWith("Chat ")) {
-			String shortTitle = message.length() > 30 ? message.substring(0, 30) + "..." : message;
-			activeTab.setText(shortTitle);
-		}
+	    if (activeTab.getText().startsWith("Chat ") || activeTab.getText().equals("Creating chat...")) {
+	        String shortTitle = message.length() > 30 ? message.substring(0, 30) + "..." : message;
+	        activeTab.setText(shortTitle);
+	    }
 
-		inputField.setText("");
+	    String messageCopy = message;
+	    inputField.setText("");
 
-		Display.getDefault().timerExec(500, () -> {
-			addMessageToComposite(chatComposite, message, false);
-		});
+	    new Thread(() -> {
+	        try {
+	            System.out.println("[sendMessage] Sending message to cline task send: " + messageCopy);
+	            String output = executeClineCommand("task", "send", messageCopy);
+	            System.out.println("[sendMessage] Output from cline task send: " + output);
+
+	            if (output.contains("Message sent successfully")) {
+	                System.out.println("[sendMessage] Message sent successfully");
+	            } else if (output.contains("Error:") || output.contains("failed")) {
+	                System.out.println("[sendMessage] Error sending message: " + output);
+	                display.asyncExec(() -> {
+	                    addMessageToComposite(chatComposite, "Error sending message: " + output, false);
+	                });
+	            }
+
+	        } catch (Exception ex) {
+	            System.out.println("[sendMessage] Exception sending message: " + ex.getMessage());
+	            ex.printStackTrace();
+	            display.asyncExec(() -> {
+	                addMessageToComposite(chatComposite, "Failed to send message: " + ex.getMessage(), false);
+	            });
+	        }
+	    }, "SendMessageThread").start();
 	}
 
 	private void addMessageToComposite(Composite chatComposite, String text, boolean isUser) {

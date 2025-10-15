@@ -6,8 +6,6 @@ AI-powered coding assistant that can be run locally through CLI.
 
 - **Go** - [https://go.dev/doc/install](https://go.dev/doc/install)
 
-export PATH="$PATH:/Users/alex/go/bin"
-
 - **Node.js** - [https://nodejs.org/en/download](https://nodejs.org/en/download)
 - **Claude API Key** from Anthropic
 
@@ -30,6 +28,46 @@ Generate the protocol buffer files:
 npm run protos
 npm run protos-go
 ```
+
+**Important Note for Mac Users:** If this is your first time running `npm run protos-go` after installing Go, the command will likely fail because Go's bin directory is not in your PATH. The error output will provide the exact PATH line you need. Follow these steps:
+
+1. **Run the command and check the error output**. Look for a section that says:
+   ```
+   To fix this, add your Go bin directory to your PATH:
+     Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):
+     export PATH="$PATH:/Users/yourusername/go/bin"
+   ```
+
+2. **Copy the export line** from your error output (it will show your actual path)
+
+3. **Add it to your shell configuration:**
+   ```bash
+   # For zsh (default on newer macOS)
+   nano ~/.zshrc
+   
+   # For bash
+   nano ~/.bashrc
+   ```
+
+4. **Paste the export line** at the end of the file (e.g., `export PATH="$PATH:/Users/yourusername/go/bin"`)
+
+5. **Save and exit** (in nano: Ctrl+X, then Y, then Enter)
+
+6. **Reload your shell configuration:**
+   ```bash
+   # For zsh
+   source ~/.zshrc
+   
+   # For bash
+   source ~/.bashrc
+   ```
+
+7. **Run the command again:**
+   ```bash
+   npm run protos-go
+   ```
+
+This time it should complete successfully.
 
 ### 3. Compile CLI and Standalone
 
