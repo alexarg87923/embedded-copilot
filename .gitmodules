@@ -1,0 +1,3 @@
+[submodule "cline_repo"]
+	path = cline_repo
+	url = https://github.com/alexarg87923/cline
