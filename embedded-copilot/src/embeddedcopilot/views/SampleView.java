@@ -105,7 +105,6 @@ public class SampleView extends ViewPart {
         historyView.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
         historyView.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
 
-        // Title
         Label titleLabel = new Label(historyView, SWT.NONE);
         titleLabel.setText("Chat History");
         titleLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
@@ -114,7 +113,6 @@ public class SampleView extends ViewPart {
         titleData.verticalIndent = 15;
         titleLabel.setLayoutData(titleData);
 
-        // Scrollable list
         historyScrolled = new org.eclipse.swt.custom.ScrolledComposite(historyView, SWT.V_SCROLL);
         historyScrolled.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
         historyScrolled.setExpandHorizontal(true);
@@ -323,21 +321,17 @@ public class SampleView extends ViewPart {
     private void openChatFromHistory(ChatHistory history) {
         System.out.println("[openChatFromHistory] Opening chat: " + history.getTitle());
 
-        // Switch from history view to tab view
         historyView.setVisible(false);
         ((GridData) historyView.getLayoutData()).exclude = true;
         tabFolder.setVisible(true);
         ((GridData) tabFolder.getLayoutData()).exclude = false;
 
-        // Create new tab
         CTabItem item = new CTabItem(tabFolder, SWT.CLOSE);
         item.setText(history.getTitle());
 
-        // Create chat composite using ChatUIManager
         Composite chatComposite = chatUIManager.createChatComposite(tabFolder);
         item.setControl(chatComposite);
 
-        // Add all messages from history
         for (ChatMessage msg : history.getMessages()) {
             chatUIManager.addMessage(chatComposite, msg.getText(), msg.isUser());
         }
@@ -361,20 +355,17 @@ public class SampleView extends ViewPart {
         }
 
         System.out.println("[createNewChat] Setting up UI...");
-        
-        // Switch from history view to tab view
+
         historyView.setVisible(false);
         ((GridData) historyView.getLayoutData()).exclude = true;
         tabFolder.setVisible(true);
         ((GridData) tabFolder.getLayoutData()).exclude = false;
 
-        // Create new tab
         chatCounter++;
         System.out.println("[createNewChat] Chat counter: " + chatCounter);
         CTabItem item = new CTabItem(tabFolder, SWT.CLOSE);
         item.setText("Creating chat...");
 
-        // Create chat composite using ChatUIManager
         Composite chatComposite = chatUIManager.createChatComposite(tabFolder);
         item.setControl(chatComposite);
 
@@ -390,8 +381,7 @@ public class SampleView extends ViewPart {
             try {
                 System.out.println("[createNewChat Thread] Thread started");
                 System.out.println("[createNewChat Thread] Creating Cline task...");
-                
-                // Create the task using ClineService
+
                 clineService.createTask(messageCopy);
                 System.out.println("[createNewChat Thread] Task created");
 
@@ -401,16 +391,14 @@ public class SampleView extends ViewPart {
                             : messageCopy;
                     item.setText(shortTitle);
 
-                    // Add user message to chat
                     chatUIManager.addMessage(chatComposite, messageCopy, true);
 
                     System.out.println("[createNewChat Thread asyncExec] UI updated");
                 });
 
                 System.out.println("[createNewChat Thread] About to start polling...");
-                
-                // Start polling using TaskPollingService
-                startPolling(chatComposite);
+
+                startPolling(chatComposite, messageCopy);
                 
                 System.out.println("[createNewChat Thread] Polling started");
 
@@ -430,21 +418,18 @@ public class SampleView extends ViewPart {
     /**
      * Starts polling for task updates using TaskPollingService
      */
-    private void startPolling(Composite chatComposite) {
-        System.out.println("[startPolling] Starting polling with TaskPollingService");
+	private void startPolling(Composite chatComposite, String skipFirstEchoText) {
+		System.out.println("[startPolling] Starting polling with TaskPollingService");
 
-        pollingService.startPolling(
-                // onTextUpdate callback - updates the last AI message
-                (text) -> {
-                    display.asyncExec(() -> {
-                        chatUIManager.updateLastAIMessage(chatComposite, text);
-                    });
-                },
-                // onComplete callback
-                () -> {
-                    System.out.println("[startPolling] Polling completed");
-                });
-    }
+		if (skipFirstEchoText != null && !skipFirstEchoText.isEmpty()) {
+			pollingService.setLastPrompt(skipFirstEchoText);
+		}
+
+		pollingService.startPolling(
+			(text) -> display.asyncExec(() -> chatUIManager.updateLastAIMessage(chatComposite, text)),
+			() -> System.out.println("[startPolling] Polling completed")
+		);
+	}
 
     /**
      * Shows the history view and hides the tab folder
@@ -460,63 +445,55 @@ public class SampleView extends ViewPart {
     /**
      * Sends a message in the current chat
      */
-    private void sendMessage() {
-        String message = inputField.getText().trim();
-        if (message.isEmpty()) {
-            return;
-        }
+	private void sendMessage() {
+		String message = inputField.getText().trim();
+		if (message.isEmpty()) {
+			return;
+		}
 
-        if (tabFolder.getItemCount() == 0) {
-            createNewChat();
-            return;
-        }
+		if (tabFolder.getItemCount() == 0) {
+			createNewChat();
+			return;
+		}
 
-        CTabItem activeTab = tabFolder.getSelection();
-        if (activeTab == null)
-            return;
+		CTabItem activeTab = tabFolder.getSelection();
+		if (activeTab == null) return;
 
-        Composite chatComposite = (Composite) activeTab.getControl();
+		Composite chatComposite = (Composite) activeTab.getControl();
+		chatUIManager.addMessage(chatComposite, message, true);
 
-        chatUIManager.addMessage(chatComposite, message, true);
+		if (activeTab.getText().startsWith("Chat ") || activeTab.getText().equals("Creating chat...")) {
+			String shortTitle = message.length() > 30 ? message.substring(0, 30) + "..." : message;
+			activeTab.setText(shortTitle);
+		}
 
-        if (activeTab.getText().startsWith("Chat ") || activeTab.getText().equals("Creating chat...")) {
-            String shortTitle = message.length() > 30 ? message.substring(0, 30) + "..." : message;
-            activeTab.setText(shortTitle);
-        }
+		final String messageCopy = message;
+		inputField.setText("");
 
-        String messageCopy = message;
-        inputField.setText("");
+		new Thread(() -> {
+			try {
+				System.out.println("[sendMessage] Sending message to cline task send: " + messageCopy);
 
-        new Thread(() -> {
-            try {
-                System.out.println("[sendMessage] Sending message to cline task send: " + messageCopy);
+				String output = clineService.sendMessage(messageCopy);
+				System.out.println("[sendMessage] Output from cline task send: " + output);
 
-                String output = clineService.sendMessage(messageCopy);
-                System.out.println("[sendMessage] Output from cline task send: " + output);
-
-                if (output.contains("Message sent successfully")) {
-                    System.out.println("[sendMessage] Message sent successfully");
-
-                    display.asyncExec(() -> {
-                        startPolling(chatComposite);
-                    });
-
-                } else if (output.contains("Error:") || output.contains("failed")) {
-                    System.out.println("[sendMessage] Error sending message: " + output);
-                    display.asyncExec(() -> {
-                        chatUIManager.addMessage(chatComposite, "Error sending message: " + output, false);
-                    });
-                }
-
-            } catch (Exception ex) {
-                System.out.println("[sendMessage] Exception sending message: " + ex.getMessage());
-                ex.printStackTrace();
-                display.asyncExec(() -> {
-                    chatUIManager.addMessage(chatComposite, "Failed to send message: " + ex.getMessage(), false);
-                });
-            }
-        }, "SendMessageThread").start();
-    }
+				if (output.contains("Message sent successfully")) {
+					System.out.println("[sendMessage] Message sent successfully");
+					pollingService.setLastPrompt(messageCopy);
+					display.asyncExec(() -> {
+						startPolling(chatComposite, messageCopy);
+					});
+				} else if (output.contains("Error:") || output.contains("failed")) {
+					System.out.println("[sendMessage] Error sending message: " + output);
+					display.asyncExec(() -> chatUIManager.addMessage(chatComposite, "Error sending message: " + output, false));
+				}
+			} catch (Exception ex) {
+				System.out.println("[sendMessage] Exception sending message: " + ex.getMessage());
+				ex.printStackTrace();
+				display.asyncExec(() -> chatUIManager.addMessage(chatComposite, "Failed to send message: " + ex.getMessage(), false));
+			}
+		}, "SendMessageThread").start();
+	}
 
     @Override
     public void setFocus() {

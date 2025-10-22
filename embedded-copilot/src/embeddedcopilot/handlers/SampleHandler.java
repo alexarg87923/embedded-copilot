@@ -5,33 +5,16 @@ import org.eclipse.core.commands.ExecutionEvent;
 import org.eclipse.core.commands.ExecutionException;
 import org.eclipse.ui.IWorkbenchWindow;
 import org.eclipse.ui.PartInitException;
-import org.eclipse.ui.views.WorkbenchViewerSetup;
-import org.eclipse.ui.handlers.HandlerUtil;
-import org.eclipse.ui.IEditorPart;
-import org.eclipse.jface.dialogs.MessageDialog;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.ArrayList;
 import org.eclipse.ui.IWorkbench;
 import org.eclipse.ui.PlatformUI;
-import org.eclipse.ui.IEditorReference;
-import org.eclipse.ui.IViewReference;
-import org.eclipse.ui.IViewPart;
 import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.core.runtime.Platform;
-import org.eclipse.core.runtime.IPath;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import org.eclipse.swt.widgets.Composite;
-import org.eclipse.swt.widgets.Label;
-import org.eclipse.swt.SWT;
-import org.eclipse.ui.part.ViewPart;
 
 public class SampleHandler extends AbstractHandler {
-
     @Override
     public Object execute(ExecutionEvent event) throws ExecutionException {
         IWorkbenchPage page = PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage();
@@ -53,7 +36,7 @@ public class SampleHandler extends AbstractHandler {
         // Check if there is an active window
         if (window != null) {
             // Get the active page (which represents the current perspective)
-            IWorkbenchPage page = window.getActivePage();
+//            IWorkbenchPage page = window.getActivePage();
 
             try {
 				String snapshot = Files.readString(

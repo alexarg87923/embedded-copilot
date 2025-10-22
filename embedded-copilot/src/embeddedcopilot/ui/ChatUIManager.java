@@ -80,10 +80,30 @@ public class ChatUIManager {
             Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
             Control[] children = chatContainer.getChildren();
 
-            if (children.length > 0) {
-                Control lastChild = children[children.length - 1];
-                if (lastChild instanceof Composite) {
-                    lastChild.dispose();
+            Composite lastAssistantContainer = null;
+            for (int i = children.length - 1; i >= 0; i--) {
+                if (children[i] instanceof Composite) {
+                    Composite c = (Composite) children[i];
+                    Object role = c.getData("role");
+                    if ("assistant".equals(role)) {
+                        lastAssistantContainer = c;
+                        break;
+                    }
+                }
+            }
+
+            if (lastAssistantContainer != null) {
+                StyledText messageText = (StyledText) lastAssistantContainer.getData("messageText");
+                if (messageText != null && !messageText.isDisposed()) {
+                    messageText.setText(text);
+                    lastAssistantContainer.layout(true, true);
+                    Composite scrolled = (Composite) chatComposite.getData("scrolled");
+                    if (scrolled instanceof ScrolledComposite) {
+                        ((ScrolledComposite) scrolled).setMinSize(
+                            ((Composite) chatComposite.getData("chatContainer")).computeSize(SWT.DEFAULT, SWT.DEFAULT)
+                        );
+                    }
+                    return;
                 }
             }
 
@@ -103,6 +123,8 @@ public class ChatUIManager {
         Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
 
         Composite messageContainer = new Composite(chatContainer, SWT.NONE);
+        messageContainer.setData("role", isUser ? "user" : "assistant");  // ← tag role
+
         GridLayout messageLayout = new GridLayout(1, false);
         messageLayout.marginWidth = 0;
         messageLayout.marginHeight = 0;
@@ -124,12 +146,8 @@ public class ChatUIManager {
         bubble.setLayout(bubbleLayout);
         bubble.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
 
-        Color bubbleColor;
-        if (isUser) {
-            bubbleColor = new Color(display, 230, 240, 255);
-        } else {
-            bubbleColor = new Color(display, 245, 245, 245);
-        }
+        Color bubbleColor = isUser ? new Color(display, 230, 240, 255)
+                                : new Color(display, 245, 245, 245);
         bubble.setBackground(bubbleColor);
 
         StyledText messageText = new StyledText(bubble, SWT.WRAP | SWT.READ_ONLY);
@@ -140,13 +158,13 @@ public class ChatUIManager {
         textData.widthHint = 0;
         messageText.setLayoutData(textData);
 
+        messageContainer.setData("messageText", messageText);
+
         bubble.addDisposeListener(e -> bubbleColor.dispose());
 
         chatContainer.layout(true, true);
         scrolled.setMinSize(chatContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
 
-        display.asyncExec(() -> {
-            scrolled.setOrigin(0, chatContainer.getSize().y);
-        });
+        display.asyncExec(() -> scrolled.setOrigin(0, chatContainer.getSize().y));
     }
 }
