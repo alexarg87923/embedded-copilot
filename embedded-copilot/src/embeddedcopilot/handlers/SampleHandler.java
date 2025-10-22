@@ -32,16 +32,16 @@ import org.eclipse.ui.part.ViewPart;
 
 public class SampleHandler extends AbstractHandler {
 
-	@Override
-	public Object execute(ExecutionEvent event) throws ExecutionException {
-		IWorkbenchPage page = PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage();
-		try {
-			page.showView("embeddedcopilot.views.SampleView");
-		} catch (PartInitException e) {
-			e.printStackTrace();
-		}
-		return null;
-	}
+    @Override
+    public Object execute(ExecutionEvent event) throws ExecutionException {
+        IWorkbenchPage page = PlatformUI.getWorkbench().getActiveWorkbenchWindow().getActivePage();
+        try {
+            page.showView("embeddedcopilot.views.SampleView");
+        } catch (PartInitException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
 
     public static void getAllParts() {
         // Get the top-level workbench instance
@@ -98,12 +98,12 @@ public class SampleHandler extends AbstractHandler {
 //            }
         }
     }
-	
+
     public IWorkbenchWindow[] getAllWorkbenchWindows() {
         IWorkbench workbench = PlatformUI.getWorkbench();
         return workbench.getWorkbenchWindows();
     }
-    
+
     public void printAllWindowTitles() {
         IWorkbenchWindow[] windows = getAllWorkbenchWindows();
         if (windows.length == 0) {

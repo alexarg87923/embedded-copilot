@@ -20,6 +20,8 @@ import org.eclipse.ui.part.ViewPart;
 import java.io.BufferedReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import org.eclipse.swt.custom.CTabFolderEvent;
 import org.eclipse.swt.custom.CTabFolder2Adapter;
 import java.io.InputStreamReader;
@@ -47,6 +49,19 @@ import java.util.Arrays;
 import java.io.File;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import org.eclipse.ui.PlatformUI;
+import org.eclipse.ui.IWorkbenchWindow;
+import org.eclipse.ui.ISelectionService;
+import org.eclipse.jface.viewers.ISelection;
+import org.eclipse.jface.viewers.IStructuredSelection;
+import org.eclipse.core.resources.IProject;
+import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.IAdaptable;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 
 public class SampleView extends ViewPart {
 	public static final String ID = "embeddedcopilot.views.SampleView";
@@ -58,14 +73,18 @@ public class SampleView extends ViewPart {
 	private Composite historyListContainer;
 	private ScrolledComposite historyScrolled;
 	private Text inputField;
-	private String activeTaskId = null;
 	private List<ChatHistory> chatHistories = new ArrayList<>();
 	private int chatCounter = 0;
 	private String cliBinaryDir = null;
+
+	private Thread pollingThread = null;
+	private volatile boolean shouldStopPolling = false;
+	private Set<String> processedTextChunks = new HashSet<>();
+
 	private class ChatHistory {
 		String title;
 		List<ChatMessage> messages = new ArrayList<>();
-		
+
 		ChatHistory(String title) {
 			this.title = title;
 		}
@@ -174,7 +193,7 @@ public class SampleView extends ViewPart {
 
 		historyScrolled.setContent(historyListContainer);
 	}
-	
+
 	private void loadTaskHistoryFromCline() {
 		chatHistories.clear();
 		addPlaceholder("Loading task history...");
@@ -344,22 +363,6 @@ public class SampleView extends ViewPart {
 
 	    final boolean[] hovering = { false };
 
-//	    item.addListener(SWT.MouseEnter, e -> {
-//	        System.out.println("MouseEnter " + widgetName.apply(item) + " -> set hoverBg");
-//	        hovering[0] = true;
-//	        item.setBackground(hoverBg);
-//	        item.redraw();
-//	        item.update();
-//	    });
-//
-//	    item.addListener(SWT.MouseExit, e -> {
-//	        System.out.println("MouseExit " + widgetName.apply(item) + " -> set normalBg");
-//	        hovering[0] = false;
-//	        item.setBackground(normalBg);
-//	        item.redraw();
-//	        item.update();
-//	    });
-
 	    Listener childEnter = e ->
 	        System.out.println("MouseEnter child: " + widgetName.apply(e.widget));
 	    Listener childExit  = e ->
@@ -373,8 +376,8 @@ public class SampleView extends ViewPart {
 	    Listener moveFilter = new Listener() {
 	        @Override public void handleEvent(Event e) {
 	            Point cursorDisplay = display.getCursorLocation();
-	            Point rel = historyListContainer.toControl(cursorDisplay); // parent coords
-	            Rectangle bounds = item.getBounds(); // parent coords
+	            Point rel = historyListContainer.toControl(cursorDisplay);
+	            Rectangle bounds = item.getBounds();
 
 	            boolean inside = bounds.contains(rel);
 	            if (!inside && hovering[0]) {
@@ -415,28 +418,28 @@ public class SampleView extends ViewPart {
 		inputField.setFocus();
 	}
 
-	private String createClineTask(String message) throws Exception {
+	private void createClineTask(String message) throws Exception {
 	    System.out.println("[createClineTask] Starting with message: " + message);
 
 	    try {
 	        String output = executeClineCommand(
 	            "task",
 	            "new",
-	            message,
 	            "-s", "act-mode-api-provider=anthropic",
-	            "-s", "act-mode-api-model-id=claude-sonnet-4.5"
+	            "-s", "act-mode-api-model-id=claude-sonnet-4.5",
+	            message
 	        );
 
 	        System.out.println("[createClineTask] Output from cline task new: " + output);
 
-	        String taskId = parseTaskIdFromOutput(output);
-	        System.out.println("[createClineTask] Parsed task ID: " + taskId);
+	        boolean success = parseTaskCreationSuccess(output);
+	        System.out.println("[createClineTask] Task creation success: " + success);
 
-	        if (taskId == null) {
-	            throw new Exception("Failed to parse task ID from output: " + output);
+	        if (!success) {
+	            throw new Exception("Failed to confirm task creation from output: " + output);
 	        }
 
-	        return taskId;
+	        System.out.println("[createClineTask] Task created successfully");
 	    } catch (Exception ex) {
 	        System.out.println("[createClineTask] Exception in createClineTask: " + ex.getMessage());
 	        ex.printStackTrace();
@@ -444,28 +447,25 @@ public class SampleView extends ViewPart {
 	    }
 	}
 
-	private String parseTaskIdFromOutput(String output) {
-	    System.out.println("[parseTaskIdFromOutput] Parsing output: " + output);
+	private boolean parseTaskCreationSuccess(String output) {
+	    System.out.println("[parseTaskCreationSuccess] Parsing output: " + output);
 
 	    String[] lines = output.split("\\R");
-	    System.out.println("[parseTaskIdFromOutput] Split into " + lines.length + " lines");
+	    System.out.println("[parseTaskCreationSuccess] Split into " + lines.length + " lines");
 
 	    for (int i = 0; i < lines.length; i++) {
 	        String line = lines[i];
-	        System.out.println("[parseTaskIdFromOutput] Line " + i + ": " + line);
-	        
-	        if (line.contains("Task created successfully with ID:")) {
-	            String[] parts = line.split(":");
-	            if (parts.length >= 2) {
-	                String taskId = parts[parts.length - 1].trim();
-	                System.out.println("[parseTaskIdFromOutput] Found task ID: " + taskId);
-	                return taskId;
-	            }
+	        System.out.println("[parseTaskCreationSuccess] Line " + i + ": " + line);
+
+	        if (line.contains("Cancelled existing task to start new one") || 
+	            line.contains("Task created successfully")) {
+	            System.out.println("[parseTaskCreationSuccess] Task creation confirmed");
+	            return true;
 	        }
 	    }
 
-	    System.out.println("[parseTaskIdFromOutput] No task ID found");
-	    return null;
+	    System.out.println("[parseTaskCreationSuccess] No task creation confirmation found");
+	    return false;
 	}
 
 	private String executeClineCommand(String... args) throws Exception {
@@ -491,6 +491,13 @@ public class SampleView extends ViewPart {
 	        String home = System.getProperty("user.home");
 	        env.put("HOME", home);
 	        System.out.println("[executeClineCommand] Set HOME to: " + home);
+	    }
+
+	    // Add CLINE_DIR pointing to the project root
+	    String projectRoot = getProjectRootDirectory();
+	    if (projectRoot != null) {
+	        env.put("CLINE_DIR", projectRoot);
+	        System.out.println("[executeClineCommand] Set CLINE_DIR to: " + projectRoot);
 	    }
 
 	    String currentPath = env.get("PATH");
@@ -583,9 +590,8 @@ public class SampleView extends ViewPart {
 	        try {
 	            System.out.println("[createNewChat Thread] Thread started");
 	            System.out.println("[createNewChat Thread] Creating Cline task...");
-	            String taskId = createClineTask(messageCopy);
-	            System.out.println("[createNewChat Thread] Task created with ID: " + taskId);
-	            activeTaskId = taskId;
+	            createClineTask(messageCopy);
+	            System.out.println("[createNewChat Thread] Task created");
 
 	            display.asyncExec(() -> {
 	                System.out.println("[createNewChat Thread asyncExec] Updating UI with task info");
@@ -596,9 +602,9 @@ public class SampleView extends ViewPart {
 	                System.out.println("[createNewChat Thread asyncExec] UI updated");
 	            });
 
-	            System.out.println("[createNewChat Thread] About to call followTaskOutput...");
-	            followTaskOutput(chatComposite);
-	            System.out.println("[createNewChat Thread] followTaskOutput completed");
+	            System.out.println("[createNewChat Thread] About to start polling...");
+	            startPollingTaskOutput(chatComposite);
+	            System.out.println("[createNewChat Thread] Polling started");
 
 	        } catch (Exception ex) {
 	            System.out.println("[createNewChat Thread] Exception occurred: " + ex.getMessage());
@@ -613,130 +619,142 @@ public class SampleView extends ViewPart {
 	    System.out.println("[createNewChat] Method completed, thread running in background");
 	}
 
-	private void followTaskOutput(Composite chatComposite) throws Exception {
-	    System.out.println("[followTaskOutput] Starting to follow task output");
-	    String cliBinaryPath = extractCliBinary();
+	private void startPollingTaskOutput(Composite chatComposite) {
+	    System.out.println("[startPollingTaskOutput] Starting polling");
 
-	    List<String> command = new ArrayList<>();
-	    command.add(cliBinaryPath);
-	    command.add("task");
-	    command.add("follow");
-	    command.add("-o");
-	    command.add("json");
-	    
-	    ProcessBuilder pb = new ProcessBuilder(command);
-	    
-	    File workingDir = new File(cliBinaryDir);
-	    pb.directory(workingDir);
-	    
-	    Map<String, String> env = pb.environment();
-	    if (!env.containsKey("HOME") || env.get("HOME") == null || env.get("HOME").isEmpty()) {
-	        String home = System.getProperty("user.home");
-	        env.put("HOME", home);
-	    }
-	    
-	    String currentPath = env.get("PATH");
-	    String newPath = cliBinaryDir + File.pathSeparator + (currentPath != null ? currentPath : "");
-	    env.put("PATH", newPath);
-	    
-	    pb.redirectErrorStream(true);
-	    pb.redirectInput(ProcessBuilder.Redirect.PIPE);
-	    
-	    Process proc = pb.start();
-	    proc.getOutputStream().close();
-	    System.out.println("[followTaskOutput] Process started");
+	    stopPolling();
 
-	    StringBuilder aiMessage = new StringBuilder();
-	    StringBuilder jsonBuffer = new StringBuilder();
-	    boolean isUserMessage = true; // Alternate between user and AI
-	    final boolean[] hasDisplayedAIMessage = {false};
+	    processedTextChunks.clear();
 	    
-	    try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
-	        String line;
+	    shouldStopPolling = false;
+
+	    pollingThread = new Thread(() -> {
+	        System.out.println("[PollingThread] Thread started");
+
+	        StringBuilder currentAIMessage = new StringBuilder();
+	        boolean hasDisplayedAIMessage = false;
+	        boolean receivedFinalResponse = false;
 	        
-	        System.out.println("[followTaskOutput] Starting to read JSON lines...");
-	        while ((line = reader.readLine()) != null) {
-	            System.out.println("[followTaskOutput] JSON line: " + line);
-	            
-	            jsonBuffer.append(line).append("\n");
-	            
-	            if (line.trim().equals("}")) {
-	                String jsonObject = jsonBuffer.toString();
-	                System.out.println("[followTaskOutput] Complete JSON object: " + jsonObject);
-	                
+	        try {
+	            while (!shouldStopPolling && !receivedFinalResponse) {
 	                try {
-	                    String textToAppend = parseJsonEvent(jsonObject);
-	                    
-	                    if (textToAppend != null && !textToAppend.isEmpty()) {
-	                        if (isUserMessage) {
-	                            System.out.println("[followTaskOutput] User message: " + textToAppend);
-	                            String userMsg = textToAppend;
-	                            display.asyncExec(() -> {
-	                                addMessageToComposite(chatComposite, userMsg, true);
-	                            });
-	                            isUserMessage = false;
-	                        } else {
-	                            System.out.println("[followTaskOutput] AI message: " + textToAppend);
-	                            aiMessage.append(textToAppend).append("\n\n");
-	                            
-	                            String messageSoFar = aiMessage.toString();
-	                            display.asyncExec(() -> {
-	                                Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
-	                                Control[] children = chatContainer.getChildren();
-	                                
-	                                if (hasDisplayedAIMessage[0] && children.length > 0) {
-	                                    Control lastChild = children[children.length - 1];
-	                                    if (lastChild instanceof Composite) {
-	                                        lastChild.dispose();
+	                    String jsonOutput = executeClineCommand("task", "view", "-F", "json");
+
+	                    if (jsonOutput != null && !jsonOutput.trim().isEmpty()) {
+	                        JsonObject root = JsonParser.parseString(jsonOutput).getAsJsonObject();
+
+	                        if (root.has("type") && root.get("type").getAsString().equals("say")) {
+	                            if (root.has("say") && root.get("say").getAsString().equals("text")) {
+	                                if (root.has("text")) {
+	                                    String text = root.get("text").getAsString();
+
+	                                    System.out.println("[PollingThread] Received final say/text response: " + text);
+
+	                                    if (!processedTextChunks.contains(text)) {
+	                                        processedTextChunks.add(text);
+	                                        currentAIMessage.append(text);
+
+	                                        String finalMessage = currentAIMessage.toString();
+	                                        boolean hadMessage = hasDisplayedAIMessage;
+
+	                                        display.asyncExec(() -> {
+	                                            Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
+	                                            Control[] children = chatContainer.getChildren();
+
+	                                            if (hadMessage && children.length > 0) {
+	                                                Control lastChild = children[children.length - 1];
+	                                                if (lastChild instanceof Composite) {
+	                                                    lastChild.dispose();
+	                                                }
+	                                            }
+
+	                                            addMessageToComposite(chatComposite, finalMessage, false);
+	                                        });
+
+	                                        hasDisplayedAIMessage = true;
+	                                    }
+
+	                                    receivedFinalResponse = true;
+	                                    System.out.println("[PollingThread] Received final response, stopping polling");
+	                                    break;
+	                                }
+	                            }
+	                        }
+
+	                        if (root.has("streamingText")) {
+	                            JsonArray streamingArray = root.getAsJsonArray("streamingText");
+
+	                            for (JsonElement element : streamingArray) {
+	                                JsonObject textObj = element.getAsJsonObject();
+
+	                                if (textObj.has("type") && textObj.get("type").getAsString().equals("say")) {
+	                                    if (textObj.has("say") && textObj.get("say").getAsString().equals("text")) {
+	                                        if (textObj.has("text")) {
+	                                            String text = textObj.get("text").getAsString();
+
+	                                            if (!processedTextChunks.contains(text)) {
+	                                                processedTextChunks.add(text);
+
+	                                                currentAIMessage.append(text);
+
+	                                                String messageSoFar = currentAIMessage.toString();
+	                                                boolean hadMessage = hasDisplayedAIMessage;
+
+	                                                display.asyncExec(() -> {
+	                                                    Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
+	                                                    Control[] children = chatContainer.getChildren();
+
+	                                                    if (hadMessage && children.length > 0) {
+	                                                        Control lastChild = children[children.length - 1];
+	                                                        if (lastChild instanceof Composite) {
+	                                                            lastChild.dispose();
+	                                                        }
+	                                                    }
+
+	                                                    addMessageToComposite(chatComposite, messageSoFar, false);
+	                                                });
+	                                                
+	                                                hasDisplayedAIMessage = true;
+	                                            }
+	                                        }
 	                                    }
 	                                }
-	                                
-	                                addMessageToComposite(chatComposite, messageSoFar, false);
-	                                hasDisplayedAIMessage[0] = true;
-	                            });
-	                            
-	                            isUserMessage = true;
+	                            }
 	                        }
 	                    }
+
+	                    Thread.sleep(500);
+	                    
+	                } catch (InterruptedException e) {
+	                    System.out.println("[PollingThread] Interrupted");
+	                    break;
 	                } catch (Exception e) {
-	                    System.out.println("[followTaskOutput] Error parsing JSON: " + e.getMessage());
+	                    System.out.println("[PollingThread] Error during polling: " + e.getMessage());
+	                    e.printStackTrace();
+	                    // Continue polling despite errors
 	                }
-	                
-	                jsonBuffer = new StringBuilder();
 	            }
+	        } finally {
+	            System.out.println("[PollingThread] Polling stopped");
 	        }
-	    }
-	    
-	    proc.waitFor();
-	    System.out.println("[followTaskOutput] Process completed");
+	    }, "TaskViewPollingThread");
+
+	    pollingThread.setDaemon(true);
+	    pollingThread.start();
 	}
 
-	private String parseJsonEvent(String jsonObject) {
-	    // Check if this is a "say" event with "text" type
-	    if (jsonObject.contains("\"type\": \"say\"") && jsonObject.contains("\"say\": \"text\"")) {
-	        // Extract text field using simple string parsing
-	        int textStart = jsonObject.indexOf("\"text\": \"");
-	        if (textStart != -1) {
-	            textStart += 9; // length of "\"text\": \""
-	            int textEnd = jsonObject.indexOf("\"", textStart);
-	            
-	            // Handle escaped quotes
-	            while (textEnd > 0 && jsonObject.charAt(textEnd - 1) == '\\') {
-	                textEnd = jsonObject.indexOf("\"", textEnd + 1);
-	            }
-	            
-	            if (textEnd != -1) {
-	                String text = jsonObject.substring(textStart, textEnd);
-	                // Unescape JSON string
-	                text = text.replace("\\n", "\n")
-	                          .replace("\\\"", "\"")
-	                          .replace("\\\\", "\\");
-	                return text;
-	            }
+	private void stopPolling() {
+	    System.out.println("[stopPolling] Stopping polling");
+	    shouldStopPolling = true;
+	    
+	    if (pollingThread != null && pollingThread.isAlive()) {
+	        try {
+	            pollingThread.interrupt();
+	            pollingThread.join(2000);
+	        } catch (InterruptedException e) {
+	            System.out.println("[stopPolling] Interrupted while stopping polling thread");
 	        }
 	    }
-	    
-	    return null;
 	}
 
 	private Composite createChatComposite(Composite parent) {
@@ -825,6 +843,46 @@ public class SampleView extends ViewPart {
 	        }
 	    }, "SendMessageThread").start();
 	}
+	
+	private String getProjectRootDirectory() {
+	    try {
+	        // Get the active workbench window
+	        IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
+	        if (window != null) {
+	            ISelectionService service = window.getSelectionService();
+	            ISelection selection = service.getSelection();
+	            
+	            if (selection instanceof IStructuredSelection) {
+	                Object element = ((IStructuredSelection) selection).getFirstElement();
+	                
+	                IProject project = null;
+	                if (element instanceof IResource) {
+	                    project = ((IResource) element).getProject();
+	                } else if (element instanceof IAdaptable) {
+	                    IResource resource = ((IAdaptable) element).getAdapter(IResource.class);
+	                    if (resource != null) {
+	                        project = resource.getProject();
+	                    }
+	                }
+	                
+	                if (project != null) {
+	                    return project.getLocation().toOSString();
+	                }
+	            }
+	        }
+	        
+	        // Fallback: try to get the first project in the workspace
+	        IProject[] projects = ResourcesPlugin.getWorkspace().getRoot().getProjects();
+	        if (projects.length > 0) {
+	            return projects[0].getLocation().toOSString();
+	        }
+	    } catch (Exception e) {
+	        System.out.println("[getProjectRootDirectory] Error getting project root: " + e.getMessage());
+	        e.printStackTrace();
+	    }
+	    
+	    return null;
+	}
 
 	private void addMessageToComposite(Composite chatComposite, String text, boolean isUser) {
 	    ScrolledComposite scrolled = (ScrolledComposite) chatComposite.getData("scrolled");
@@ -881,5 +939,11 @@ public class SampleView extends ViewPart {
 	@Override
 	public void setFocus() {
 		inputField.setFocus();
+	}
+	
+	@Override
+	public void dispose() {
+	    stopPolling();
+	    super.dispose();
 	}
 }
