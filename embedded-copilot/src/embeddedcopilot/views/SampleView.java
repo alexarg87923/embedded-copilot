@@ -33,6 +33,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 
+import org.eclipse.swt.graphics.Font;
+import org.eclipse.swt.graphics.FontData;
+import org.eclipse.swt.widgets.Button;
+
 /**
  * Main view for the Embedded Copilot plugin.
  * Provides a chat interface for interacting with Cline AI assistant.
@@ -56,6 +60,13 @@ public class SampleView extends ViewPart {
     private List<ChatHistory> chatHistories = new ArrayList<>();
     private int chatCounter = 0;
 
+    private Font inputFont;
+    private Color inputBorderColor;
+    private Color inputBgColor;
+    private Composite welcomeScreen;
+    private Font welcomeTitleFont;
+    private Font welcomeSubtitleFont;
+
     @Override
     public void createPartControl(Composite parent) {
         display = parent.getDisplay();
@@ -64,6 +75,8 @@ public class SampleView extends ViewPart {
         clineService = new ClineService(projectService);
         pollingService = new TaskPollingService(clineService);
         chatUIManager = new ChatUIManager(display);
+
+        initializeInputStyling();
 
         mainContainer = new Composite(parent, SWT.NONE);
         GridLayout mainLayout = new GridLayout(1, false);
@@ -86,11 +99,108 @@ public class SampleView extends ViewPart {
             }
         });
 
+        createWelcomeScreen();
+
         createHistoryView();
 
         createInputField();
 
         loadTaskHistoryFromCline();
+    }
+
+    /**
+     * Initialize styling resources for input field
+     */
+    private void initializeInputStyling() {
+        FontData[] fontData = display.getSystemFont().getFontData();
+        inputFont = new Font(display, fontData[0].getName(), 11, SWT.NORMAL);
+        welcomeTitleFont = new Font(display, fontData[0].getName(), 14, SWT.BOLD);
+        welcomeSubtitleFont = new Font(display, fontData[0].getName(), 10, SWT.NORMAL);
+        inputBorderColor = new Color(display, 209, 209, 209);
+        inputBgColor = new Color(display, 255, 255, 255);
+    }
+
+    /**
+     * Creates the welcome screen
+     */
+    private void createWelcomeScreen() {
+        welcomeScreen = new Composite(mainContainer, SWT.NONE);
+        GridLayout welcomeLayout = new GridLayout(1, false);
+        welcomeLayout.marginWidth = 0;
+        welcomeLayout.marginHeight = 0;
+        welcomeScreen.setLayout(welcomeLayout);
+        welcomeScreen.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        welcomeScreen.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+
+        // Scrollable container for welcome content
+        org.eclipse.swt.custom.ScrolledComposite welcomeScrolled = new org.eclipse.swt.custom.ScrolledComposite(
+            welcomeScreen, SWT.V_SCROLL);
+        welcomeScrolled.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
+        welcomeScrolled.setExpandHorizontal(true);
+        welcomeScrolled.setExpandVertical(true);
+        welcomeScrolled.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+
+        // Center container
+        Composite centerContainer = new Composite(welcomeScrolled, SWT.NONE);
+        GridLayout centerLayout = new GridLayout(1, false);
+        centerLayout.marginWidth = 15;
+        centerLayout.marginHeight = 20;
+        centerLayout.verticalSpacing = 8;
+        centerContainer.setLayout(centerLayout);
+        centerContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+
+        welcomeScrolled.setContent(centerContainer);
+
+        // Title
+        Label titleLabel = new Label(centerContainer, SWT.NONE);
+        titleLabel.setText("AI Copilot");
+        titleLabel.setFont(welcomeTitleFont);
+        titleLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+        GridData titleData = new GridData(SWT.CENTER, SWT.CENTER, true, false);
+        titleLabel.setLayoutData(titleData);
+
+        // Subtitle
+        Label subtitleLabel = new Label(centerContainer, SWT.NONE);
+        subtitleLabel.setText("Your AI coding assistant");
+        subtitleLabel.setFont(welcomeSubtitleFont);
+        subtitleLabel.setForeground(new Color(display, 115, 115, 115));
+        subtitleLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+        GridData subtitleData = new GridData(SWT.CENTER, SWT.CENTER, true, false);
+        subtitleLabel.setLayoutData(subtitleData);
+
+        // Spacer
+        Label spacer = new Label(centerContainer, SWT.NONE);
+        GridData spacerData = new GridData(SWT.CENTER, SWT.CENTER, true, false);
+        spacerData.heightHint = 5;
+        spacer.setLayoutData(spacerData);
+        spacer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+
+        // View History Button
+        Button historyButton = new Button(centerContainer, SWT.PUSH);
+        historyButton.setText("View Chat History");
+        historyButton.setFont(inputFont);
+        GridData buttonData = new GridData(SWT.CENTER, SWT.CENTER, false, false);
+        buttonData.widthHint = 130;
+        buttonData.heightHint = 28;
+        historyButton.setLayoutData(buttonData);
+        
+        historyButton.addListener(SWT.Selection, e -> {
+            showHistoryView();
+        });
+
+        // Instructions
+        Label instructionsLabel = new Label(centerContainer, SWT.WRAP | SWT.CENTER);
+        instructionsLabel.setText("Type a message below to start a new conversation");
+        instructionsLabel.setFont(inputFont);
+        instructionsLabel.setForeground(new Color(display, 140, 140, 140));
+        instructionsLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+        GridData instructionsData = new GridData(SWT.CENTER, SWT.CENTER, true, false);
+        instructionsData.widthHint = 200;
+        instructionsLabel.setLayoutData(instructionsData);
+
+        // Set scrolled composite content size
+        centerContainer.setSize(centerContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
+        welcomeScrolled.setMinSize(centerContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
     }
 
     /**
@@ -105,13 +215,34 @@ public class SampleView extends ViewPart {
         historyView.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
         historyView.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
 
-        Label titleLabel = new Label(historyView, SWT.NONE);
+        // Hide history view by default
+        historyView.setVisible(false);
+        ((GridData) historyView.getLayoutData()).exclude = true;
+
+        // Header with title and back button
+        Composite headerContainer = new Composite(historyView, SWT.NONE);
+        GridLayout headerLayout = new GridLayout(2, false);
+        headerLayout.marginWidth = 15;
+        headerLayout.marginHeight = 15;
+        headerContainer.setLayout(headerLayout);
+        headerContainer.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        headerContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+
+        Label titleLabel = new Label(headerContainer, SWT.NONE);
         titleLabel.setText("Chat History");
+        titleLabel.setFont(welcomeSubtitleFont);
         titleLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
-        GridData titleData = new GridData(SWT.FILL, SWT.CENTER, true, false);
-        titleData.horizontalIndent = 15;
-        titleData.verticalIndent = 15;
-        titleLabel.setLayoutData(titleData);
+        titleLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
+        Button backButton = new Button(headerContainer, SWT.PUSH);
+        backButton.setText("← Back");
+        backButton.setFont(inputFont);
+        GridData backButtonData = new GridData(SWT.END, SWT.CENTER, false, false);
+        backButton.setLayoutData(backButtonData);
+        
+        backButton.addListener(SWT.Selection, e -> {
+            showWelcomeScreen();
+        });
 
         historyScrolled = new org.eclipse.swt.custom.ScrolledComposite(historyView, SWT.V_SCROLL);
         historyScrolled.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
@@ -136,17 +267,37 @@ public class SampleView extends ViewPart {
     private void createInputField() {
         Composite inputContainer = new Composite(mainContainer, SWT.NONE);
         GridLayout inputLayout = new GridLayout(1, false);
-        inputLayout.marginWidth = 10;
-        inputLayout.marginHeight = 10;
+        inputLayout.marginWidth = 16;
+        inputLayout.marginHeight = 16;
         inputContainer.setLayout(inputLayout);
         inputContainer.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
         inputContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
 
-        inputField = new Text(inputContainer, SWT.BORDER | SWT.MULTI | SWT.WRAP | SWT.V_SCROLL);
+        // Wrapper for the input field to add custom border
+        Composite inputWrapper = new Composite(inputContainer, SWT.NONE);
+        GridLayout wrapperLayout = new GridLayout(1, false);
+        wrapperLayout.marginWidth = 0;
+        wrapperLayout.marginHeight = 0;
+        inputWrapper.setLayout(wrapperLayout);
+        inputWrapper.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+        inputWrapper.setBackground(inputBgColor);
+        
+        // Add custom border with rounded corners
+        inputWrapper.addPaintListener(e -> {
+            e.gc.setForeground(inputBorderColor);
+            e.gc.setLineWidth(1);
+            e.gc.drawRoundRectangle(0, 0, inputWrapper.getSize().x - 1, inputWrapper.getSize().y - 1, 8, 8);
+        });
+
+        inputField = new Text(inputWrapper, SWT.MULTI | SWT.WRAP | SWT.V_SCROLL);
         GridData inputData = new GridData(SWT.FILL, SWT.CENTER, true, false);
-        inputData.heightHint = 60;
+        inputData.heightHint = 80;
+        inputData.horizontalIndent = 12;
+        inputData.verticalIndent = 12;
         inputField.setLayoutData(inputData);
-        inputField.setMessage("Type a message to start a new chat...");
+        inputField.setMessage("Message Assistant...");
+        inputField.setFont(inputFont);
+        inputField.setBackground(inputBgColor);
 
         inputField.addKeyListener(new KeyAdapter() {
             @Override
@@ -321,6 +472,9 @@ public class SampleView extends ViewPart {
     private void openChatFromHistory(ChatHistory history) {
         System.out.println("[openChatFromHistory] Opening chat: " + history.getTitle());
 
+        welcomeScreen.setVisible(false);
+        ((GridData) welcomeScreen.getLayoutData()).exclude = true;
+
         historyView.setVisible(false);
         ((GridData) historyView.getLayoutData()).exclude = true;
         tabFolder.setVisible(true);
@@ -355,6 +509,9 @@ public class SampleView extends ViewPart {
         }
 
         System.out.println("[createNewChat] Setting up UI...");
+
+        welcomeScreen.setVisible(false);
+        ((GridData) welcomeScreen.getLayoutData()).exclude = true;
 
         historyView.setVisible(false);
         ((GridData) historyView.getLayoutData()).exclude = true;
@@ -432,9 +589,25 @@ public class SampleView extends ViewPart {
 	}
 
     /**
+     * Shows the welcome screen and hides other views
+     */
+    private void showWelcomeScreen() {
+        tabFolder.setVisible(false);
+        ((GridData) tabFolder.getLayoutData()).exclude = true;
+        historyView.setVisible(false);
+        ((GridData) historyView.getLayoutData()).exclude = true;
+        welcomeScreen.setVisible(true);
+        ((GridData) welcomeScreen.getLayoutData()).exclude = false;
+        mainContainer.layout(true, true);
+    }
+
+    /**
      * Shows the history view and hides the tab folder
      */
     private void showHistoryView() {
+        welcomeScreen.setVisible(false);
+        ((GridData) welcomeScreen.getLayoutData()).exclude = true;
+    
         tabFolder.setVisible(false);
         ((GridData) tabFolder.getLayoutData()).exclude = true;
         historyView.setVisible(true);
@@ -504,6 +677,26 @@ public class SampleView extends ViewPart {
     public void dispose() {
         System.out.println("[SampleView] Disposing view, stopping polling");
         pollingService.stopPolling();
+
+        chatUIManager.dispose();
+
+        // Clean up styling resources
+        if (inputFont != null && !inputFont.isDisposed()) {
+            inputFont.dispose();
+        }
+        if (inputBorderColor != null && !inputBorderColor.isDisposed()) {
+            inputBorderColor.dispose();
+        }
+        if (inputBgColor != null && !inputBgColor.isDisposed()) {
+            inputBgColor.dispose();
+        }
+        if (welcomeTitleFont != null && !welcomeTitleFont.isDisposed()) {
+            welcomeTitleFont.dispose();
+        }
+        if (welcomeSubtitleFont != null && !welcomeSubtitleFont.isDisposed()) {
+            welcomeSubtitleFont.dispose();
+        }
+
         super.dispose();
     }
 }
