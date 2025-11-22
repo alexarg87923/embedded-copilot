@@ -1,1 +1,0 @@
-<user_query> Add a new function in utils/stringHelpers.ts that takes a string and returns it reversed. Write a Jest test for it in utils/stringHelpers.test.ts. </user_query>

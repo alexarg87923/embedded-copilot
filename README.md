@@ -45,12 +45,6 @@ A simple chat interface for testing and experimenting with different prompts and
 │  │  (./cline)                │   │
 │  └───────────────────────────┘   │
 └──────────────────────────────────┘
-
-     Testing & Development
-┌──────────────────────────────────┐
-│   Prompt Testing Tool            │
-│  (./prompt_testing)              │  ← Development utility
-└──────────────────────────────────┘
 ```
 
 ## Getting Started
