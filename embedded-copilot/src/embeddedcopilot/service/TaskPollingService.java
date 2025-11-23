@@ -6,6 +6,7 @@ import java.util.function.Consumer;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import embeddedcopilot.config.PollingConfig;
+import embeddedcopilot.service.MessageProcessor.Message;
 
 /**
  * Service for polling Cline task updates.
@@ -18,7 +19,7 @@ public class TaskPollingService {
     private volatile boolean shouldStopPolling = false;
     private Set<String> processedTextChunks = new HashSet<>();
     private final Object pollingLock = new Object();
-    private final TurnTracker tracker = new TurnTracker();
+    private final MessageProcessor messageProcessor = new MessageProcessor();
 
     public TaskPollingService(ClineService clineService) {
         this.clineService = clineService;
@@ -28,16 +29,17 @@ public class TaskPollingService {
      * Starts polling for task updates.
      * Thread-safe - will stop any existing polling before starting new one.
      * 
-     * @param onTextUpdate callback for text updates (receives accumulated text)
+     * @param onMessage callback for each message (receives Message object)
      * @param onComplete callback when polling completes
+     * @param onAskRequiresApproval callback when an ask message requiring approval is detected (receives ask JSON text)
+     * @param onToolUsed callback when a tool is used (for refreshing package explorer)
      */
-    public void startPolling(Consumer<String> onTextUpdate, Runnable onComplete) {
+    public void startPolling(Consumer<Message> onMessage, Runnable onComplete, Consumer<String> onAskRequiresApproval, Runnable onToolUsed) {
         synchronized (pollingLock) {
             stopPollingInternal();
             shouldStopPolling = false;
 
             pollingThread = new Thread(() -> {
-                StringBuilder currentAIMessage = new StringBuilder();
                 boolean receivedFinalResponse = false;
                 int noUpdateCount = 0;
                 int pollCount = 0;
@@ -63,30 +65,51 @@ public class TaskPollingService {
 
                                         try {
                                             JsonObject root = JsonParser.parseString(jsonStr).getAsJsonObject();
-                                            TurnTracker.Decision d = tracker.handle(root);
-                                            switch (d.kind) {
-                                                case USER_ECHO:
-                                                case TURN_STARTED:
-                                                case IGNORE:
-                                                    break;
-                                                case APPEND_TO_TURN:
-                                                    currentAIMessage.append(d.text);
-                                                    onTextUpdate.accept(currentAIMessage.toString());
-                                                    hadAnyUpdateThisPoll = true;
-                                                    noUpdateCount = 0;
-                                                    break;
-                                                case FINAL_FOR_TURN:
-                                                    if (d.text != null && !d.text.isEmpty()) {
-                                                        currentAIMessage.append(d.text);
-                                                        onTextUpdate.accept(currentAIMessage.toString());
-                                                    } else {
-                                                        onTextUpdate.accept(currentAIMessage.toString());
+                                            Message msg = messageProcessor.process(root);
+                                            
+                                            if (msg != null) {
+                                                hadAnyUpdateThisPoll = true;
+                                                noUpdateCount = 0;
+                                                
+                                                // Handle ask messages requiring approval
+                                                if (msg.type == Message.Type.ASK_REQUIRES_APPROVAL) {
+                                                    if (msg.text != null && !msg.text.isEmpty() && onAskRequiresApproval != null) {
+                                                        onAskRequiresApproval.accept(msg.text);
                                                     }
+                                                    // Don't stop polling - continue to see AI's response
+                                                } else {
+                                                    // Send all other messages to the callback
+                                                    if (onMessage != null) {
+                                                        onMessage.accept(msg);
+                                                    }
+                                                    
+                                                    // Check if tool was used (for refreshing package explorer)
+                                                    // Check both "say" messages with tool and "ask" messages with tool
+                                                    boolean isToolMessage = (msg.sayType != null && msg.sayType.equals("tool")) ||
+                                                                          (msg.askType != null && msg.askType.equals("tool"));
+                                                    
+                                                    if (isToolMessage && msg.text != null) {
+                                                        // Check if it's a file creation/modification tool
+                                                        String toolText = msg.text.toLowerCase();
+                                                        if (toolText.contains("newfilecreated") || 
+                                                            toolText.contains("write_to_file") || 
+                                                            toolText.contains("editedexistingfile") ||
+                                                            toolText.contains("filedeleted")) {
+                                                            if (onToolUsed != null) {
+                                                                onToolUsed.run();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                
+                                                // Check for completion
+                                                if (msg.sayType != null && msg.sayType.equals("completion_result")) {
                                                     receivedFinalResponse = true;
-                                                    break;
+                                                }
                                             }
-                                            if (receivedFinalResponse) break;
-                                        } catch (Exception ignored) {}
+                                        } catch (Exception e) {
+                                            System.out.println("[TaskPollingService] Error processing message: " + e.getMessage());
+                                        }
                                     }
                                 } else {
                                     noUpdateCount++;
@@ -128,7 +151,7 @@ public class TaskPollingService {
     }
 
     public void setLastPrompt(String prompt) {
-        tracker.startNewPrompt(prompt);
+        messageProcessor.startNewPrompt(prompt);
     }
 
 

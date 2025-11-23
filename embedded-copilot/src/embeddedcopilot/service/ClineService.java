@@ -520,6 +520,21 @@ public class ClineService {
     }
 
     /**
+     * Sends an ask response (approve or deny) to the current Cline task
+     * 
+     * @param approve true to approve, false to deny
+     * @return the command output
+     * @throws Exception if sending fails
+     */
+    public String sendAskResponse(boolean approve) throws Exception {
+        System.out.println("[ClineService] Sending ask response: " + (approve ? "approve" : "deny"));
+        String approveValue = approve ? "true" : "false";
+        String output = executeClineCommand("-v", "task", "send", "-a", approveValue);
+        System.out.println("[ClineService] Output from cline task send -a " + approveValue + ": " + output);
+        return output;
+    }
+
+    /**
      * Gets the current task view in JSON format
      * 
      * @return JSON output of the task view

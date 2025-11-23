@@ -6,11 +6,17 @@ import java.util.Set;
 
 public class TurnTracker {
     public static class Decision {
-        public enum Kind { IGNORE, USER_ECHO, TURN_STARTED, APPEND_TO_TURN, FINAL_FOR_TURN }
+        public enum Kind { IGNORE, USER_ECHO, TURN_STARTED, APPEND_TO_TURN, FINAL_FOR_TURN, ASK_REQUIRES_APPROVAL }
         public final Kind kind;
         public final String text;
-        public Decision(Kind k) { this(k, ""); }
-        public Decision(Kind k, String t) { kind = k; text = t; }
+        public final JsonObject askData; // For ask messages, contains the full JSON object
+        public Decision(Kind k) { this(k, "", null); }
+        public Decision(Kind k, String t) { this(k, t, null); }
+        public Decision(Kind k, String t, JsonObject askData) { 
+            kind = k; 
+            text = t; 
+            this.askData = askData;
+        }
     }
 
     private final Set<String> dedupe = new HashSet<>();
@@ -52,8 +58,15 @@ public class TurnTracker {
 
         long gateTs = (apiStartTs != null ? apiStartTs : echoTs);
 
-        // Handle tool usage messages
+        // Handle ask messages requiring approval (ask with tool)
         if ("ask".equals(type) && "tool".equals(ask) && ts >= gateTs) {
+            // Return special decision type that requires approval
+            // Store the full JSON object so we can parse and display it nicely
+            return new Decision(Decision.Kind.ASK_REQUIRES_APPROVAL, text != null ? text : "", root);
+        }
+
+        // Handle say messages with tool (also may need approval, but currently just display)
+        if ("say".equals(type) && "tool".equals(say) && ts >= gateTs) {
             if (text != null && !text.isEmpty()) {
                 String toolMessage = formatToolMessage(text);
                 if (dedupe.add(toolMessage)) {

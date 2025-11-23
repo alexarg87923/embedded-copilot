@@ -10,6 +10,13 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.Button;
+import org.eclipse.swt.events.SelectionAdapter;
+import org.eclipse.swt.events.SelectionEvent;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import embeddedcopilot.service.MessageProcessor.Message;
+import embeddedcopilot.service.MessageProcessor;
 
 /**
  * Manager for chat UI components and message rendering
@@ -44,7 +51,7 @@ public class ChatUIManager {
         GridLayout chatLayout = new GridLayout(1, false);
         chatLayout.marginWidth = 10;
         chatLayout.marginHeight = 10;
-        chatLayout.verticalSpacing = 15;
+        chatLayout.verticalSpacing = 5;
         chatContainer.setLayout(chatLayout);
         chatContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
 
@@ -99,9 +106,9 @@ public class ChatUIManager {
                     lastAssistantContainer.layout(true, true);
                     Composite scrolled = (Composite) chatComposite.getData("scrolled");
                     if (scrolled instanceof ScrolledComposite) {
-                        ((ScrolledComposite) scrolled).setMinSize(
-                            ((Composite) chatComposite.getData("chatContainer")).computeSize(SWT.DEFAULT, SWT.DEFAULT)
-                        );
+                        ScrolledComposite sc = (ScrolledComposite) scrolled;
+                        int containerWidth = sc.getClientArea().width;
+                        sc.setMinSize(chatContainer.computeSize(containerWidth, SWT.DEFAULT));
                     }
                     return;
                 }
@@ -163,8 +170,187 @@ public class ChatUIManager {
         bubble.addDisposeListener(e -> bubbleColor.dispose());
 
         chatContainer.layout(true, true);
-        scrolled.setMinSize(chatContainer.computeSize(SWT.DEFAULT, SWT.DEFAULT));
+        int containerWidth = scrolled.getClientArea().width;
+        scrolled.setMinSize(chatContainer.computeSize(containerWidth, SWT.DEFAULT));
+    }
 
-        display.asyncExec(() -> scrolled.setOrigin(0, chatContainer.getSize().y));
+    /**
+     * Adds an ask message requiring approval with approve/deny buttons
+     * 
+     * @param chatComposite the chat composite
+     * @param askJsonText the JSON text from the ask message
+     * @param onApprove callback when approve button is clicked (receives message container)
+     * @param onDeny callback when deny button is clicked (receives message container)
+     */
+    public void addAskMessage(Composite chatComposite, String askJsonText, java.util.function.Consumer<Composite> onApprove, java.util.function.Consumer<Composite> onDeny) {
+        display.asyncExec(() -> {
+            ScrolledComposite scrolled = (ScrolledComposite) chatComposite.getData("scrolled");
+            Composite chatContainer = (Composite) chatComposite.getData("chatContainer");
+
+            Composite messageContainer = new Composite(chatContainer, SWT.NONE);
+            messageContainer.setData("role", "ask");  // Special role for ask messages
+
+            GridLayout messageLayout = new GridLayout(1, false);
+            messageLayout.marginWidth = 0;
+            messageLayout.marginHeight = 0;
+            messageLayout.verticalSpacing = 5;
+            messageContainer.setLayout(messageLayout);
+            messageContainer.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+            messageContainer.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+
+            Label senderLabel = new Label(messageContainer, SWT.NONE);
+            senderLabel.setText("AI Assistant - Action Required");
+            senderLabel.setForeground(display.getSystemColor(SWT.COLOR_DARK_GRAY));
+            senderLabel.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+            senderLabel.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
+            Composite bubble = new Composite(messageContainer, SWT.BORDER);
+            GridLayout bubbleLayout = new GridLayout(1, false);
+            bubbleLayout.marginWidth = 12;
+            bubbleLayout.marginHeight = 10;
+            bubbleLayout.verticalSpacing = 8;
+            bubble.setLayout(bubbleLayout);
+            bubble.setLayoutData(new GridData(SWT.FILL, SWT.CENTER, true, false));
+
+            // Use a slightly different color to indicate this needs attention
+            Color bubbleColor = new Color(display, 255, 250, 230);
+            bubble.setBackground(bubbleColor);
+
+            // Parse and display the tool information in a user-friendly way
+            String displayText = formatToolAskMessage(askJsonText);
+            
+            Label infoLabel = new Label(bubble, SWT.WRAP);
+            infoLabel.setText("The AI wants to perform the following action:");
+            infoLabel.setBackground(bubbleColor);
+            infoLabel.setForeground(display.getSystemColor(SWT.COLOR_DARK_GRAY));
+            GridData infoData = new GridData(SWT.FILL, SWT.CENTER, true, false);
+            infoData.widthHint = 0;
+            infoLabel.setLayoutData(infoData);
+
+            StyledText toolText = new StyledText(bubble, SWT.WRAP | SWT.READ_ONLY | SWT.BORDER);
+            toolText.setText(displayText);
+            toolText.setBackground(display.getSystemColor(SWT.COLOR_WHITE));
+            toolText.setWordWrap(true);
+            GridData toolData = new GridData(SWT.FILL, SWT.CENTER, true, false);
+            toolData.widthHint = 0;
+            toolData.heightHint = 100;
+            toolText.setLayoutData(toolData);
+
+            // Button container
+            Composite buttonContainer = new Composite(bubble, SWT.NONE);
+            GridLayout buttonLayout = new GridLayout(2, false);
+            buttonLayout.marginWidth = 0;
+            buttonLayout.marginHeight = 0;
+            buttonLayout.horizontalSpacing = 10;
+            buttonContainer.setLayout(buttonLayout);
+            buttonContainer.setLayoutData(new GridData(SWT.RIGHT, SWT.CENTER, false, false));
+            buttonContainer.setBackground(bubbleColor);
+            messageContainer.setData("buttonContainer", buttonContainer); // Store reference
+
+            // Approve button (green)
+            Button approveButton = new Button(buttonContainer, SWT.PUSH);
+            approveButton.setText("Approve");
+            approveButton.setBackground(new Color(display, 76, 175, 80)); // Green
+            approveButton.setForeground(display.getSystemColor(SWT.COLOR_WHITE));
+            GridData approveData = new GridData(SWT.CENTER, SWT.CENTER, false, false);
+            approveData.widthHint = 100;
+            approveButton.setLayoutData(approveData);
+            approveButton.addSelectionListener(new SelectionAdapter() {
+                @Override
+                public void widgetSelected(SelectionEvent e) {
+                    if (onApprove != null) {
+                        onApprove.accept(messageContainer);
+                    }
+                }
+            });
+
+            // Deny button (red)
+            Button denyButton = new Button(buttonContainer, SWT.PUSH);
+            denyButton.setText("Deny");
+            denyButton.setBackground(new Color(display, 244, 67, 54)); // Red
+            denyButton.setForeground(display.getSystemColor(SWT.COLOR_WHITE));
+            GridData denyData = new GridData(SWT.CENTER, SWT.CENTER, false, false);
+            denyData.widthHint = 100;
+            denyButton.setLayoutData(denyData);
+            denyButton.addSelectionListener(new SelectionAdapter() {
+                @Override
+                public void widgetSelected(SelectionEvent e) {
+                    if (onDeny != null) {
+                        onDeny.accept(messageContainer);
+                    }
+                }
+            });
+
+            bubble.addDisposeListener(e -> {
+                bubbleColor.dispose();
+                approveButton.getBackground().dispose();
+                denyButton.getBackground().dispose();
+            });
+
+            chatContainer.layout(true, true);
+            int containerWidth = scrolled.getClientArea().width;
+            scrolled.setMinSize(chatContainer.computeSize(containerWidth, SWT.DEFAULT));
+        });
+    }
+
+    /**
+     * Hides the approve/deny buttons in an ask message
+     */
+    public void hideAskButtons(Composite askMessageContainer) {
+        display.asyncExec(() -> {
+            Object buttonContainerObj = askMessageContainer.getData("buttonContainer");
+            if (buttonContainerObj instanceof Composite) {
+                Composite buttonContainer = (Composite) buttonContainerObj;
+                buttonContainer.setVisible(false);
+                buttonContainer.getParent().layout(true, true);
+            }
+        });
+    }
+
+    /**
+     * Adds a message from MessageProcessor
+     */
+    public void addMessage(Composite chatComposite, Message msg) {
+        if (msg == null) return;
+        
+        String displayText = MessageProcessor.formatMessage(msg);
+        boolean isUser = msg.type == Message.Type.USER;
+        addMessage(chatComposite, displayText, isUser);
+    }
+
+    /**
+     * Formats the tool ask message JSON into a user-friendly display string
+     * Only shows tool name and path, not content or workspace information
+     */
+    private String formatToolAskMessage(String toolJsonText) {
+        try {
+            JsonObject toolObj = JsonParser.parseString(toolJsonText).getAsJsonObject();
+            StringBuilder sb = new StringBuilder();
+
+            if (toolObj.has("tool")) {
+                String toolName = toolObj.get("tool").getAsString();
+                sb.append("Tool: ").append(formatToolName(toolName));
+            }
+
+            if (toolObj.has("path")) {
+                if (sb.length() > 0) {
+                    sb.append("\n");
+                }
+                sb.append("Path: ").append(toolObj.get("path").getAsString());
+            }
+
+            return sb.toString();
+        } catch (Exception e) {
+            // If parsing fails, return a simple message
+            return "Tool operation";
+        }
+    }
+
+    /**
+     * Formats tool names to be more readable
+     */
+    private String formatToolName(String toolName) {
+        // Convert camelCase to Title Case
+        return toolName.replaceAll("([a-z])([A-Z])", "$1 $2");
     }
 }

@@ -27,6 +27,8 @@ import embeddedcopilot.model.ChatMessage;
 import embeddedcopilot.service.ClineService;
 import embeddedcopilot.service.ProjectService;
 import embeddedcopilot.service.TaskPollingService;
+import embeddedcopilot.service.MessageProcessor;
+import embeddedcopilot.service.MessageProcessor.Message;
 import embeddedcopilot.ui.ChatUIManager;
 
 import java.util.ArrayList;
@@ -55,6 +57,7 @@ public class SampleView extends ViewPart {
 
     private List<ChatHistory> chatHistories = new ArrayList<>();
     private int chatCounter = 0;
+    private Composite currentAskMessageContainer = null; // Track current ask message to hide buttons
 
     @Override
     public void createPartControl(Composite parent) {
@@ -426,8 +429,21 @@ public class SampleView extends ViewPart {
 		}
 
 		pollingService.startPolling(
-			(text) -> display.asyncExec(() -> chatUIManager.updateLastAIMessage(chatComposite, text)),
-			() -> System.out.println("[startPolling] Polling completed")
+			(msg) -> display.asyncExec(() -> {
+				// Handle all messages
+				if (msg.type == Message.Type.USER) {
+					chatUIManager.addMessage(chatComposite, msg.text, true);
+				} else if (msg.type == Message.Type.AI) {
+					// For AI messages, append to last message or create new
+					chatUIManager.addMessage(chatComposite, MessageProcessor.formatMessage(msg), false);
+				}
+			}),
+			() -> System.out.println("[startPolling] Polling completed"),
+			(askJsonText) -> display.asyncExec(() -> handleAskRequiresApproval(chatComposite, askJsonText)),
+			() -> display.asyncExec(() -> {
+				// Refresh package explorer when tool is used
+				projectService.refreshPackageExplorer();
+			})
 		);
 	}
 
@@ -440,6 +456,89 @@ public class SampleView extends ViewPart {
         historyView.setVisible(true);
         ((GridData) historyView.getLayoutData()).exclude = false;
         mainContainer.layout(true, true);
+    }
+
+    /**
+     * Handles an ask message that requires approval
+     * 
+     * @param chatComposite the chat composite
+     * @param askJsonText the JSON text from the ask message
+     */
+    private void handleAskRequiresApproval(Composite chatComposite, String askJsonText) {
+        System.out.println("[handleAskRequiresApproval] Ask requires approval: " + askJsonText);
+        
+        // Display the ask message with approve/deny buttons
+        chatUIManager.addAskMessage(
+            chatComposite,
+            askJsonText,
+            (askContainer) -> handleApprove(chatComposite, askContainer),
+            (askContainer) -> handleDeny(chatComposite, askContainer)
+        );
+    }
+
+    /**
+     * Handles approve button click
+     */
+    private void handleApprove(Composite chatComposite, Composite askContainer) {
+        System.out.println("[handleApprove] User approved");
+        
+        // Hide buttons immediately
+        if (askContainer != null) {
+            chatUIManager.hideAskButtons(askContainer);
+        }
+        currentAskMessageContainer = null;
+        
+        new Thread(() -> {
+            try {
+                String output = clineService.sendAskResponse(true);
+                System.out.println("[handleApprove] Output: " + output);
+                
+                // Refresh package explorer after tool approval (tool will be executed)
+                projectService.refreshPackageExplorer();
+                
+                display.asyncExec(() -> {
+                    chatUIManager.addMessage(chatComposite, "✓ Approved", false);
+                    // Polling continues automatically - no need to restart
+                });
+            } catch (Exception ex) {
+                System.out.println("[handleApprove] Exception: " + ex.getMessage());
+                ex.printStackTrace();
+                display.asyncExec(() -> {
+                    chatUIManager.addMessage(chatComposite, "Failed to approve: " + ex.getMessage(), false);
+                });
+            }
+        }, "ApproveThread").start();
+    }
+
+    /**
+     * Handles deny button click
+     */
+    private void handleDeny(Composite chatComposite, Composite askContainer) {
+        System.out.println("[handleDeny] User denied");
+        
+        // Hide buttons immediately
+        if (askContainer != null) {
+            chatUIManager.hideAskButtons(askContainer);
+        }
+        currentAskMessageContainer = null;
+        
+        new Thread(() -> {
+            try {
+                String output = clineService.sendAskResponse(false);
+                System.out.println("[handleDeny] Output: " + output);
+                
+                display.asyncExec(() -> {
+                    chatUIManager.addMessage(chatComposite, "✗ Denied", false);
+                    // Polling continues automatically - no need to restart
+                });
+            } catch (Exception ex) {
+                System.out.println("[handleDeny] Exception: " + ex.getMessage());
+                ex.printStackTrace();
+                display.asyncExec(() -> {
+                    chatUIManager.addMessage(chatComposite, "Failed to deny: " + ex.getMessage(), false);
+                });
+            }
+        }, "DenyThread").start();
     }
 
     /**

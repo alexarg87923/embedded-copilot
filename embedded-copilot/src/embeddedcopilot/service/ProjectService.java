@@ -8,7 +8,10 @@ import org.eclipse.jface.viewers.IStructuredSelection;
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.resources.IResource;
 import org.eclipse.core.resources.ResourcesPlugin;
+import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.IAdaptable;
+import org.eclipse.core.runtime.IProgressMonitor;
+import org.eclipse.core.runtime.NullProgressMonitor;
 
 /**
  * Service for Eclipse project-related operations
@@ -57,5 +60,24 @@ public class ProjectService {
         }
 
         return null;
+    }
+
+    /**
+     * Refreshes the package explorer to reflect file system changes
+     */
+    public void refreshPackageExplorer() {
+        try {
+            IProject[] projects = ResourcesPlugin.getWorkspace().getRoot().getProjects();
+            IProgressMonitor monitor = new NullProgressMonitor();
+            for (IProject project : projects) {
+                if (project.isOpen()) {
+                    project.refreshLocal(IResource.DEPTH_INFINITE, monitor);
+                }
+            }
+            System.out.println("[ProjectService] Refreshed package explorer");
+        } catch (CoreException e) {
+            System.out.println("[ProjectService] Error refreshing package explorer: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 }
