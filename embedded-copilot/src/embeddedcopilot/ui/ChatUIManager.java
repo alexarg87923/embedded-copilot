@@ -107,8 +107,26 @@ public class ChatUIManager {
                     Composite scrolled = (Composite) chatComposite.getData("scrolled");
                     if (scrolled instanceof ScrolledComposite) {
                         ScrolledComposite sc = (ScrolledComposite) scrolled;
+
+                        // Check if user is currently scrolled to the bottom
+                        int currentScrollY = sc.getOrigin().y;
+                        int oldContainerHeight = chatContainer.getSize().y;
+                        int viewportHeight = sc.getClientArea().height;
+                        int oldMaxScrollY = Math.max(0, oldContainerHeight - viewportHeight);
+                        boolean wasAtBottom = currentScrollY >= oldMaxScrollY - 10;
+
                         int containerWidth = sc.getClientArea().width;
                         sc.setMinSize(chatContainer.computeSize(containerWidth, SWT.DEFAULT));
+
+                        // Only auto-scroll if user was already at the bottom
+                        if (wasAtBottom) {
+                            display.asyncExec(() -> {
+                                int newContainerHeight = chatContainer.getSize().y;
+                                int newViewportHeight = sc.getClientArea().height;
+                                int newMaxScrollY = Math.max(0, newContainerHeight - newViewportHeight);
+                                sc.setOrigin(0, newMaxScrollY);
+                            });
+                        }
                     }
                     return;
                 }
@@ -169,9 +187,26 @@ public class ChatUIManager {
 
         bubble.addDisposeListener(e -> bubbleColor.dispose());
 
+        // Check if user is currently scrolled to the bottom
+        int currentScrollY = scrolled.getOrigin().y;
+        int oldContainerHeight = chatContainer.getSize().y;
+        int viewportHeight = scrolled.getClientArea().height;
+        int oldMaxScrollY = Math.max(0, oldContainerHeight - viewportHeight);
+        boolean wasAtBottom = currentScrollY >= oldMaxScrollY - 10; // 10px threshold
+
         chatContainer.layout(true, true);
         int containerWidth = scrolled.getClientArea().width;
         scrolled.setMinSize(chatContainer.computeSize(containerWidth, SWT.DEFAULT));
+
+        // Only auto-scroll if user was already at the bottom
+        if (wasAtBottom) {
+            display.asyncExec(() -> {
+                int newContainerHeight = chatContainer.getSize().y;
+                int newViewportHeight = scrolled.getClientArea().height;
+                int newMaxScrollY = Math.max(0, newContainerHeight - newViewportHeight);
+                scrolled.setOrigin(0, newMaxScrollY);
+            });
+        }
     }
 
     /**
@@ -287,9 +322,26 @@ public class ChatUIManager {
                 denyButton.getBackground().dispose();
             });
 
+            // Check if user is currently scrolled to the bottom
+            int currentScrollY = scrolled.getOrigin().y;
+            int oldContainerHeight = chatContainer.getSize().y;
+            int viewportHeight = scrolled.getClientArea().height;
+            int oldMaxScrollY = Math.max(0, oldContainerHeight - viewportHeight);
+            boolean wasAtBottom = currentScrollY >= oldMaxScrollY - 10; // 10px threshold
+
             chatContainer.layout(true, true);
             int containerWidth = scrolled.getClientArea().width;
             scrolled.setMinSize(chatContainer.computeSize(containerWidth, SWT.DEFAULT));
+
+            // Only auto-scroll if user was already at the bottom
+            if (wasAtBottom) {
+                display.asyncExec(() -> {
+                    int newContainerHeight = chatContainer.getSize().y;
+                    int newViewportHeight = scrolled.getClientArea().height;
+                    int newMaxScrollY = Math.max(0, newContainerHeight - newViewportHeight);
+                    scrolled.setOrigin(0, newMaxScrollY);
+                });
+            }
         });
     }
 
