@@ -36,9 +36,57 @@ public class ClineService {
     private boolean clineInitialized = false;
     private String nodeJsPath = null;
     private String nodePathValue = null;
+    private String platformIdentifier = null;
+    private String clineExecutableName = null;
+    private String instanceAddress = null;
 
     public ClineService(ProjectService projectService) {
         this.projectService = projectService;
+        detectPlatform();
+
+        // Register shutdown hook to clean up cline instance
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                shutdown();
+            } catch (Exception e) {
+                System.err.println("[ClineService] Error during shutdown: " + e.getMessage());
+            }
+        }));
+    }
+
+    /**
+     * Detects the current platform and architecture
+     */
+    private void detectPlatform() {
+        String osName = System.getProperty("os.name").toLowerCase();
+        String osArch = System.getProperty("os.arch").toLowerCase();
+
+        String os;
+        String arch;
+
+        if (osName.contains("mac") || osName.contains("darwin")) {
+            os = "darwin";
+        } else if (osName.contains("linux")) {
+            os = "linux";
+        } else {
+            throw new RuntimeException("Unsupported OS: " + osName);
+        }
+
+        if (osArch.contains("aarch64") || osArch.contains("arm64")) {
+            arch = "arm64";
+        } else if (osArch.contains("amd64") || osArch.contains("x86_64") || osArch.contains("x64")) {
+            arch = "amd64";  // Cline binaries use "amd64"
+        } else {
+            throw new RuntimeException("Unsupported architecture: " + osArch);
+        }
+
+        platformIdentifier = os + "-" + arch;
+        clineExecutableName = "cline-" + platformIdentifier;
+
+        System.out.println("[ClineService] Detected OS: " + osName + " (" + os + ")");
+        System.out.println("[ClineService] Detected Arch: " + osArch + " (" + arch + ")");
+        System.out.println("[ClineService] Platform identifier: " + platformIdentifier);
+        System.out.println("[ClineService] Will use Cline binary: " + clineExecutableName);
     }
     
     /**
@@ -64,78 +112,119 @@ public class ClineService {
     }
     
     /**
+     * Extracts the bundled Node.js binary for the detected platform
+     *
+     * @param tempDir the temporary directory where binaries are extracted
+     * @return the path to the Node.js bin directory
+     */
+    private String extractNodeJs(Path tempDir) throws Exception {
+        Bundle bundle = FrameworkUtil.getBundle(getClass());
+        if (bundle == null) {
+            throw new Exception("Could not get OSGi bundle");
+        }
+
+        // Node.js uses "x64" instead of "amd64"
+        // Using Node 22 LTS instead of Node 24 to avoid punycode deprecation issues with gRPC
+        String nodeArch = platformIdentifier.contains("amd64") ? platformIdentifier.replace("amd64", "x64") : platformIdentifier;
+        String nodeTarballName;
+
+        if (nodeArch.equals("darwin-arm64")) {
+            nodeTarballName = "node-v22.21.1-darwin-arm64.tar.gz";
+        } else if (nodeArch.equals("darwin-x64")) {
+            nodeTarballName = "node-v22.21.1-darwin-x64.tar.gz";
+        } else if (nodeArch.equals("linux-arm64")) {
+            nodeTarballName = "node-v22.21.1-linux-arm64.tar.xz";
+        } else if (nodeArch.equals("linux-x64")) {
+            nodeTarballName = "node-v22.21.1-linux-x64.tar.xz";
+        } else {
+            throw new Exception("Unsupported platform for Node.js: " + nodeArch + " (original: " + platformIdentifier + ")");
+        }
+
+        System.out.println("[ClineService] Extracting Node.js tarball: " + nodeTarballName);
+
+        URL tarballUrl = bundle.getEntry("resources/" + nodeTarballName);
+        if (tarballUrl == null) {
+            throw new Exception("Node.js tarball not found in bundle: resources/" + nodeTarballName);
+        }
+
+        Path nodeDir = tempDir.resolve("node");
+        Files.createDirectories(nodeDir);
+
+        // Extract using tar command (system tar supports both gz and xz)
+        Path tarballPath = tempDir.resolve(nodeTarballName);
+        try (InputStream tarIn = tarballUrl.openStream()) {
+            Files.copy(tarIn, tarballPath, StandardCopyOption.REPLACE_EXISTING);
+        }
+
+        System.out.println("[ClineService] Extracting " + nodeTarballName + "...");
+        ProcessBuilder pb = new ProcessBuilder("tar", "-xf", tarballPath.toString(), "-C", nodeDir.toString(), "--strip-components=1");
+        pb.redirectErrorStream(true);
+        Process proc = pb.start();
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println("[ClineService TAR] " + line);
+            }
+        }
+
+        boolean finished = proc.waitFor(60, TimeUnit.SECONDS);
+        if (!finished) {
+            proc.destroyForcibly();
+            throw new Exception("Node.js extraction timed out");
+        }
+
+        if (proc.exitValue() != 0) {
+            throw new Exception("Failed to extract Node.js tarball (exit code: " + proc.exitValue() + ")");
+        }
+
+        // Delete tarball after extraction
+        Files.deleteIfExists(tarballPath);
+
+        Path nodeBinPath = nodeDir.resolve("bin");
+        Path nodeExecutable = nodeBinPath.resolve("node");
+        if (!Files.exists(nodeExecutable)) {
+            throw new Exception("Node.js binary not found after extraction at: " + nodeBinPath);
+        }
+
+        // Ensure node binary is executable
+        nodeExecutable.toFile().setExecutable(true);
+        System.out.println("[ClineService] ✓ Node.js extracted and made executable: " + nodeBinPath);
+
+        return nodeBinPath.toString();
+    }
+
+    /**
      * Sets up Node.js environment (PATH and NODE_PATH) - called once during initialization
      */
     private void setupNodeJsEnvironment() {
-        System.out.println("[ClineService] ========== Detecting Node.js ==========");
-        
-        String home = System.getProperty("user.home");
-        String nvmVersionsDir = home + "/.nvm/versions/node";
-        
-        // Try to find node in common nvm locations
-        if (Files.exists(new File(nvmVersionsDir).toPath())) {
-            try {
-                File[] versionDirs = new File(nvmVersionsDir).listFiles(File::isDirectory);
-                if (versionDirs != null && versionDirs.length > 0) {
-                    Arrays.sort(versionDirs, (a, b) -> b.getName().compareTo(a.getName()));
-                    for (File versionDir : versionDirs) {
-                        Path nodeBinary = new File(versionDir, "bin/node").toPath();
-                        if (Files.exists(nodeBinary) && Files.isExecutable(nodeBinary)) {
-                            nodeJsPath = new File(versionDir, "bin").getAbsolutePath();
-                            System.out.println("[ClineService] ✓ Found Node.js in nvm: " + nodeBinary);
-                            break;
-                        }
-                    }
+        System.out.println("[ClineService] ========== Setting up Node.js ==========");
+
+        // Use the extracted Node.js from bundled binaries
+        try {
+            Path tempDir = Paths.get(cliBinaryDir);
+            nodeJsPath = extractNodeJs(tempDir);
+            System.out.println("[ClineService] ✓ Using bundled Node.js from: " + nodeJsPath);
+
+            // Verify the node binary works
+            Path nodeBinary = Paths.get(nodeJsPath).resolve("node");
+            ProcessBuilder testPb = new ProcessBuilder(nodeBinary.toString(), "--version");
+            Process testProc = testPb.start();
+            boolean testFinished = testProc.waitFor(5, TimeUnit.SECONDS);
+            if (testFinished && testProc.exitValue() == 0) {
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(testProc.getInputStream()))) {
+                    String version = reader.readLine();
+                    System.out.println("[ClineService] ✓ Verified bundled Node.js works: " + version);
                 }
-            } catch (Exception e) {
-                System.out.println("[ClineService] Could not scan nvm versions: " + e.getMessage());
+            } else {
+                throw new Exception("Node binary test failed or timed out");
             }
+        } catch (Exception e) {
+            System.err.println("[ClineService] FATAL: Failed to extract bundled Node.js: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Could not extract bundled Node.js", e);
         }
-        
-        // Fallback to specific common paths
-        if (nodeJsPath == null) {
-            String[] possibleNodePaths = {
-                home + "/.nvm/versions/node/v22.20.0/bin",
-                home + "/.nvm/versions/node/v22.19.0/bin",
-                home + "/.nvm/versions/node/v22.18.0/bin",
-                "/usr/local/bin",
-                "/opt/homebrew/bin",
-                "/usr/bin"
-            };
-            
-            for (String possiblePath : possibleNodePaths) {
-                Path nodeBinary = new File(possiblePath, "node").toPath();
-                if (Files.exists(nodeBinary) && Files.isExecutable(nodeBinary)) {
-                    nodeJsPath = possiblePath;
-                    break;
-                }
-            }
-        }
-        
-        // If not found, try which command
-        if (nodeJsPath == null) {
-            try {
-                Process whichProcess = new ProcessBuilder("which", "node").start();
-                whichProcess.waitFor(2, TimeUnit.SECONDS);
-                if (whichProcess.exitValue() == 0) {
-                    try (BufferedReader reader = new BufferedReader(
-                            new InputStreamReader(whichProcess.getInputStream()))) {
-                        String nodeFullPath = reader.readLine();
-                        if (nodeFullPath != null && !nodeFullPath.isEmpty()) {
-                            File nodeFile = new File(nodeFullPath);
-                            nodeJsPath = nodeFile.getParent();
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                System.out.println("[ClineService] Could not find node via 'which': " + e.getMessage());
-            }
-        }
-        
-        if (nodeJsPath == null) {
-            System.err.println("[ClineService] WARNING: Could not find Node.js in common locations");
-        }
-        
+
         // Set up NODE_PATH
         Path tempDir = Paths.get(cliBinaryDir);
         Path nodeModulesPath = tempDir.resolve("node_modules");
@@ -273,9 +362,17 @@ public class ClineService {
         Path binDir = tempDir.resolve("bin");
         Files.createDirectories(binDir);
 
-       URL clineUrl = bundle.getEntry("bin/cline");
+        // Extract platform-specific cline binary
+        String clineHostName = "cline-host-" + platformIdentifier;
+
+        System.out.println("[ClineService] Extracting platform-specific binaries:");
+        System.out.println("[ClineService]   - cline: " + clineExecutableName);
+        System.out.println("[ClineService]   - cline-host: " + clineHostName);
+
+        // Extract cline binary
+        URL clineUrl = bundle.getEntry("resources/" + clineExecutableName);
         if (clineUrl == null) {
-            throw new Exception("Binary not found in bundle: bin/cline");
+            throw new Exception("Platform-specific binary not found in bundle: resources/" + clineExecutableName);
         }
         URL clineFileUrl = FileLocator.toFileURL(clineUrl);
         InputStream clineIn = clineFileUrl.openStream();
@@ -283,9 +380,10 @@ public class ClineService {
         Files.copy(clineIn, clinePath, StandardCopyOption.REPLACE_EXISTING);
         clineIn.close();
         clinePath.toFile().setExecutable(true);
-        System.out.println("[ClineService] Extracted cline to: " + clinePath);
+        System.out.println("[ClineService] ✓ Extracted cline to: " + clinePath);
 
-        URL hostUrl = bundle.getEntry("bin/cline-host");
+        // Extract cline-host binary
+        URL hostUrl = bundle.getEntry("resources/" + clineHostName);
         if (hostUrl != null) {
             URL hostFileUrl = FileLocator.toFileURL(hostUrl);
             InputStream hostIn = hostFileUrl.openStream();
@@ -293,6 +391,9 @@ public class ClineService {
             Files.copy(hostIn, hostPath, StandardCopyOption.REPLACE_EXISTING);
             hostIn.close();
             hostPath.toFile().setExecutable(true);
+            System.out.println("[ClineService] ✓ Extracted cline-host to: " + hostPath);
+        } else {
+            System.err.println("[ClineService] WARNING: cline-host binary not found: resources/" + clineHostName);
         }
 
         // Verify final structure
@@ -345,21 +446,41 @@ public class ClineService {
         env.put("CLINE_WORKSPACE", projectRoot);
         System.out.println("[ClineService] Set CLINE_WORKSPACE=" + projectRoot);
         
-        // Use pre-configured Node.js path and NODE_PATH from initialization
-        String currentPath = env.get("PATH");
-        if (nodeJsPath != null) {
-            String newPath = nodeJsPath + File.pathSeparator + (currentPath != null ? currentPath : "");
-            env.put("PATH", newPath);
-        }
-        
-        // Add bin directory to PATH
+        // Build PATH with bundled binaries first
         String binPath = cliBinaryDir + "/bin";
-        String newPath2 = binPath + File.pathSeparator + (env.get("PATH") != null ? env.get("PATH") : "");
-        env.put("PATH", newPath2);
-        
+        String currentPath = env.get("PATH");
+        StringBuilder pathBuilder = new StringBuilder();
+
+        // Add cline bin directory first (for cline and cline-host binaries)
+        pathBuilder.append(binPath);
+
+        // Add bundled Node.js path second (so it takes precedence over system node)
+        if (nodeJsPath != null) {
+            pathBuilder.append(File.pathSeparator).append(nodeJsPath);
+
+            // Explicitly set NODE to point to our bundled node binary
+            Path nodeBinary = Paths.get(nodeJsPath).resolve("node");
+            if (Files.exists(nodeBinary)) {
+                env.put("NODE", nodeBinary.toString());
+                System.out.println("[ClineService] Set NODE=" + nodeBinary.toString());
+            } else {
+                System.err.println("[ClineService] WARNING: Node binary not found at: " + nodeBinary);
+            }
+        }
+
+        // Add original PATH last
+        if (currentPath != null && !currentPath.isEmpty()) {
+            pathBuilder.append(File.pathSeparator).append(currentPath);
+        }
+
+        String finalPath = pathBuilder.toString();
+        env.put("PATH", finalPath);
+        System.out.println("[ClineService] Final PATH=" + finalPath);
+
         // Set NODE_PATH (pre-configured during initialization)
         if (nodePathValue != null) {
             env.put("NODE_PATH", nodePathValue);
+            System.out.println("[ClineService] Set NODE_PATH=" + nodePathValue);
         }
 
         // Redirect both stdout and stderr to capture all output
@@ -687,57 +808,136 @@ public class ClineService {
      * Ensures a cline instance exists by creating one if none exists.
      * This starts cline-host and cline-core processes which stay alive independently.
      * We don't need to keep the CLI process itself running.
-     * 
+     *
      * @param cliBinaryPath path to the cline binary
      */
     private void ensureClineInitialized(String cliBinaryPath) {
         try {
             System.out.println("[ClineService] Ensuring cline instance exists...");
-            
+
             // First check if any instances exist
             String listOutput = executeClineCommandInternal("-v", "instance", "list");
-            
+
             // If no instances found, create a new one
-            if (listOutput.contains("No Cline instances found") || 
+            if (listOutput.contains("No Cline instances found") ||
                 listOutput.contains("No instances available")) {
                 System.out.println("[ClineService] No instances found, creating new instance...");
                 String newOutput = executeClineCommandInternal("-v", "instance", "new", "--default");
-                System.out.println("[ClineService] ✓ Created new cline instance");
+
+                // Parse the address from the output
+                instanceAddress = parseInstanceAddress(newOutput);
+
+                if (instanceAddress != null) {
+                    System.out.println("[ClineService] ✓ Created new cline instance at: " + instanceAddress);
+                } else {
+                    System.err.println("[ClineService] WARNING: Could not parse instance address from output");
+                    System.err.println("[ClineService] Output was: " + newOutput);
+                }
             } else {
                 System.out.println("[ClineService] ✓ Cline instance already exists (cline-host and cline-core processes run independently)");
+                // Try to parse address from list output if available
+                instanceAddress = parseInstanceAddress(listOutput);
             }
         } catch (Exception e) {
             System.out.println("[ClineService] Warning: Could not ensure cline instance: " + e.getMessage());
             // Don't fail completely - the next command will try to ensure instance anyway
         }
     }
-    
+
     /**
-     * Finds the Node.js path (helper method for interactive cline initialization)
+     * Parses the instance address from cline command output
+     *
+     * Example output:
+     * Successfully started new instance:
+     *   Address: 127.0.0.1:58297
+     *   Core Port: 58297
+     *
+     * @param output the command output
+     * @return the instance address (e.g., "127.0.0.1:58297") or null if not found
      */
-    private String findNodeJsPath() {
-        String home = System.getProperty("user.home");
-        
-        // Check nvm first
-        File nvmDir = new File(home, ".nvm");
-        if (nvmDir.exists() && nvmDir.isDirectory()) {
-            File[] versions = nvmDir.listFiles((dir, name) -> 
-                name.startsWith("versions") && new File(dir, name).isDirectory());
-            if (versions != null && versions.length > 0) {
-                File versionsDir = versions[0];
-                File[] nodeVersions = versionsDir.listFiles((dir, name) -> 
-                    name.startsWith("v") && new File(dir, name).isDirectory());
-                if (nodeVersions != null && nodeVersions.length > 0) {
-                    // Get the latest version (sorted by name, highest first)
-                    Arrays.sort(nodeVersions, (a, b) -> b.getName().compareTo(a.getName()));
-                    File nodeBin = new File(nodeVersions[0], "bin");
-                    if (nodeBin.exists()) {
-                        return nodeBin.getAbsolutePath();
-                    }
+    private String parseInstanceAddress(String output) {
+        if (output == null) {
+            return null;
+        }
+
+        String[] lines = output.split("\\R");
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("Address:")) {
+                String address = trimmed.substring("Address:".length()).trim();
+                if (!address.isEmpty()) {
+                    return address;
                 }
             }
         }
-        
+
         return null;
+    }
+
+    /**
+     * Shuts down the cline instance and cleans up resources.
+     * This should be called when the service is being destroyed.
+     */
+    public void shutdown() {
+        if (instanceAddress != null && cliBinaryDir != null) {
+            try {
+                System.out.println("[ClineService] Shutting down cline instance at: " + instanceAddress);
+
+                // Execute kill command without relying on workspace (which may be closed during shutdown)
+                String cliBinaryPath = cliBinaryDir + "/bin/cline";
+                List<String> command = new ArrayList<>();
+                command.add(cliBinaryPath);
+                command.add("-v");
+                command.add("instance");
+                command.add("kill");
+                command.add(instanceAddress);
+
+                ProcessBuilder pb = new ProcessBuilder(command);
+
+                // Use home directory as working directory (workspace may be closed)
+                String home = System.getProperty("user.home");
+                pb.directory(new File(home));
+
+                Map<String, String> env = pb.environment();
+                env.put("HOME", home);
+
+                // Set up PATH for bundled binaries
+                String binPath = cliBinaryDir + "/bin";
+                StringBuilder pathBuilder = new StringBuilder(binPath);
+                if (nodeJsPath != null) {
+                    pathBuilder.append(File.pathSeparator).append(nodeJsPath);
+                }
+                String currentPath = env.get("PATH");
+                if (currentPath != null && !currentPath.isEmpty()) {
+                    pathBuilder.append(File.pathSeparator).append(currentPath);
+                }
+                env.put("PATH", pathBuilder.toString());
+
+                pb.redirectErrorStream(true);
+                Process proc = pb.start();
+
+                // Read output
+                StringBuilder output = new StringBuilder();
+                try (BufferedReader br = new BufferedReader(new InputStreamReader(proc.getInputStream()))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        output.append(line).append("\n");
+                    }
+                }
+
+                boolean finished = proc.waitFor(10, TimeUnit.SECONDS);
+                if (!finished) {
+                    proc.destroyForcibly();
+                    System.err.println("[ClineService] Kill command timed out");
+                } else {
+                    System.out.println("[ClineService] ✓ Killed cline instance: " + output.toString());
+                }
+
+                instanceAddress = null;
+            } catch (Exception e) {
+                System.err.println("[ClineService] Error killing cline instance: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
     }
 }

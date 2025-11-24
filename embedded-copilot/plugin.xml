@@ -6,11 +6,11 @@
          point="org.eclipse.ui.commands">
       <category
             id="embedded-copilot.commands.category"
-            name="Sample Category">
+            name="Cline">
       </category>
       <command
             categoryId="embedded-copilot.commands.category"
-            name="Sample Command"
+            name="Open Cline"
             id="embedded-copilot.commands.sampleCommand">
       </command>
    </extension>
@@ -36,33 +36,83 @@
             locationURI="menu:org.eclipse.ui.main.menu?after=additions">
          <menu
                id="embedded-copilot.menus.sampleMenu"
-               label="Sample Menu"
-               mnemonic="M">
+               label="Cline"
+               mnemonic="C">
             <command
                   commandId="embedded-copilot.commands.sampleCommand"
                   id="embedded-copilot.menus.sampleCommand"
-                  mnemonic="S">
+                  mnemonic="O">
             </command>
          </menu>
       </menuContribution>
       <menuContribution
-            locationURI="toolbar:org.eclipse.ui.main.toolbar?after=additions">
+            locationURI="menu:window?after=additions">
+         <command
+               commandId="embedded-copilot.commands.sampleCommand"
+               id="embedded-copilot.menus.windowCommand"
+               label="Open Cline"
+               mnemonic="L">
+         </command>
+      </menuContribution>
+      <menuContribution
+            locationURI="menu:help?after=additions">
+         <command
+               commandId="embedded-copilot.commands.sampleCommand"
+               id="embedded-copilot.menus.helpCommand"
+               label="Open Cline"
+               mnemonic="C">
+         </command>
+      </menuContribution>
+      <menuContribution
+            locationURI="toolbar:org.eclipse.ui.main.toolbar">
          <toolbar
-               id="embedded-copilot.toolbars.sampleToolbar">
+               id="embedded-copilot.toolbars.clineToolbar">
             <command
-                  id="embedded-copilot.toolbars.sampleCommand"
+                  id="embedded-copilot.toolbars.clineCommand"
                   commandId="embedded-copilot.commands.sampleCommand"
                   icon="icons/sample.png"
-                  tooltip="Say hello world">
+                  tooltip="Open Cline"
+                  style="push">
+               <visibleWhen checkEnabled="false">
+                  <with variable="activeWorkbenchWindow">
+                     <test property="org.eclipse.ui.isWindowActive" />
+                  </with>
+               </visibleWhen>
             </command>
          </toolbar>
       </menuContribution>
+      <menuContribution
+            locationURI="toolbar:embedded-copilot.toolbars.clineToolbar?endof=embedded-copilot.toolbars.clineToolbar">
+         <command
+               commandId="embedded-copilot.commands.sampleCommand"
+               icon="icons/sample.png"
+               tooltip="Open Cline"
+               style="push">
+         </command>
+      </menuContribution>
+   </extension>
+   <extension
+         point="org.eclipse.ui.actionSets">
+      <actionSet
+            id="embedded-copilot.actionSet"
+            label="Cline"
+            visible="true">
+         <action
+               class="embeddedcopilot.handlers.SampleHandler"
+               icon="icons/sample.png"
+               id="embedded-copilot.actions.openCline"
+               label="Open Cline"
+               style="push"
+               toolbarPath="Normal/additions"
+               tooltip="Open Cline">
+         </action>
+      </actionSet>
    </extension>
    <extension
          point="org.eclipse.ui.views">
       <category
             id="embedded-copilot"
-            name="Sample Category">
+            name="Cline">
       </category>
       <view
             category="embedded-copilot"
@@ -70,7 +120,7 @@
             icon="icons/sample.png"
             id="embeddedcopilot.views.SampleView"
             inject="true"
-            name="Sample View">
+            name="Cline">
       </view>
    </extension>
    <extension
