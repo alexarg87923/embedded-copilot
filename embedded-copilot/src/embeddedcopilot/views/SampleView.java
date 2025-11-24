@@ -430,16 +430,29 @@ public class SampleView extends ViewPart {
 
 		pollingService.startPolling(
 			(msg) -> display.asyncExec(() -> {
-				// Handle all messages
+				// Skip USER type messages - they're already displayed when the user sent them
+				// These are just echoes from Cline confirming receipt
 				if (msg.type == Message.Type.USER) {
-					chatUIManager.addMessage(chatComposite, msg.text, true);
-				} else if (msg.type == Message.Type.AI) {
-					// For AI messages, append to last message or create new
-					chatUIManager.addMessage(chatComposite, MessageProcessor.formatMessage(msg), false);
+					return;
+				}
+				
+				// Use the new filtering logic for all other messages
+				if (msg.rawJson != null) {
+					String jsonLine = msg.rawJson.toString();
+					chatUIManager.processClineMessage(
+						chatComposite, 
+						jsonLine,
+						(askContainer) -> handleApprove(chatComposite, askContainer),
+						(askContainer) -> handleDeny(chatComposite, askContainer)
+					);
 				}
 			}),
 			() -> System.out.println("[startPolling] Polling completed"),
-			(askJsonText) -> display.asyncExec(() -> handleAskRequiresApproval(chatComposite, askJsonText)),
+			(askJsonText) -> {
+				// This callback is now handled by processClineMessage filtering
+				// Keep it for backward compatibility but it's no longer needed
+				System.out.println("[startPolling] Ask message detected (handled by filtering): " + askJsonText);
+			},
 			() -> display.asyncExec(() -> {
 				// Refresh package explorer when tool is used
 				projectService.refreshPackageExplorer();
