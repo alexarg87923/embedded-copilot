@@ -10,7 +10,7 @@ import java.util.Set;
  */
 public class PollingConfig {
     private static int pollingIntervalMs = 1000;
-    private static int maxNoUpdatePolls = 20;
+    private static int maxNoUpdatePolls = 30;  // 30 seconds of no updates before stopping
     private static final Set<String> finalSayTypes = new HashSet<>(Arrays.asList(
         "text",
         "completion_result"

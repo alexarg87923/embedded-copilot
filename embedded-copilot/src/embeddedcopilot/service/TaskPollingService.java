@@ -40,12 +40,11 @@ public class TaskPollingService {
             shouldStopPolling = false;
 
             pollingThread = new Thread(() -> {
-                boolean receivedFinalResponse = false;
                 int noUpdateCount = 0;
                 int pollCount = 0;
 
                 try {
-                    while (!shouldStopPolling && !receivedFinalResponse) {
+                    while (!shouldStopPolling) {
                         long startTime = System.currentTimeMillis();
                         pollCount++;
                         boolean hadAnyUpdateThisPoll = false;
@@ -71,57 +70,46 @@ public class TaskPollingService {
                                                 hadAnyUpdateThisPoll = true;
                                                 noUpdateCount = 0;
                                                 
-                                                // Handle ask messages requiring approval
-                                                if (msg.type == Message.Type.ASK_REQUIRES_APPROVAL) {
-                                                    if (msg.text != null && !msg.text.isEmpty() && onAskRequiresApproval != null) {
-                                                        onAskRequiresApproval.accept(msg.text);
-                                                    }
-                                                    // Don't stop polling - continue to see AI's response
-                                                } else {
-                                                    // Send all other messages to the callback
-                                                    if (onMessage != null) {
-                                                        onMessage.accept(msg);
-                                                    }
-                                                    
-                                                    // Check if tool was used (for refreshing package explorer)
-                                                    // Check both "say" messages with tool and "ask" messages with tool
-                                                    boolean isToolMessage = (msg.sayType != null && msg.sayType.equals("tool")) ||
-                                                                          (msg.askType != null && msg.askType.equals("tool"));
-                                                    
-                                                    if (isToolMessage && msg.text != null) {
-                                                        // Check if it's a file creation/modification tool
-                                                        String toolText = msg.text.toLowerCase();
-                                                        if (toolText.contains("newfilecreated") || 
-                                                            toolText.contains("write_to_file") || 
-                                                            toolText.contains("editedexistingfile") ||
-                                                            toolText.contains("filedeleted")) {
-                                                            if (onToolUsed != null) {
-                                                                onToolUsed.run();
-                                                            }
-                                                        }
-                                                    }
+                                                // Send all messages (including ASK_REQUIRES_APPROVAL) to the main callback
+                                                // The ChatUIManager filtering will handle display logic
+                                                if (onMessage != null) {
+                                                    onMessage.accept(msg);
                                                 }
                                                 
-                                                // Check for completion
-                                                if (msg.sayType != null && msg.sayType.equals("completion_result")) {
-                                                    receivedFinalResponse = true;
+                                                // Check if tool was used (for refreshing package explorer)
+                                                // Check both "say" messages with tool and "ask" messages with tool
+                                                boolean isToolMessage = (msg.sayType != null && msg.sayType.equals("tool")) ||
+                                                                      (msg.askType != null && msg.askType.equals("tool"));
+                                                
+                                                if (isToolMessage && msg.text != null) {
+                                                    // Check if it's a file creation/modification tool
+                                                    String toolText = msg.text.toLowerCase();
+                                                    if (toolText.contains("newfilecreated") || 
+                                                        toolText.contains("write_to_file") || 
+                                                        toolText.contains("editedexistingfile") ||
+                                                        toolText.contains("filedeleted")) {
+                                                        if (onToolUsed != null) {
+                                                            onToolUsed.run();
+                                                        }
+                                                    }
                                                 }
                                             }
                                         } catch (Exception e) {
                                             System.out.println("[TaskPollingService] Error processing message: " + e.getMessage());
                                         }
                                     }
-                                } else {
-                                    noUpdateCount++;
                                 }
-                            } else {
-                                noUpdateCount++;
                             }
 
-                            if (receivedFinalResponse) break;
-
-                            if (!hadAnyUpdateThisPoll) noUpdateCount++;
-                            if (noUpdateCount >= PollingConfig.getMaxNoUpdatePolls()) break;
+                            // Only increment noUpdateCount once per cycle if there were no updates
+                            if (!hadAnyUpdateThisPoll) {
+                                noUpdateCount++;
+                            }
+                            
+                            if (noUpdateCount >= PollingConfig.getMaxNoUpdatePolls()) {
+                                System.out.println("[TaskPollingService] Reached max no-update polls (" + noUpdateCount + "), stopping");
+                                break;
+                            }
 
                             long elapsedTime = System.currentTimeMillis() - startTime;
                             long sleepTime = PollingConfig.getPollingIntervalMs() - elapsedTime;

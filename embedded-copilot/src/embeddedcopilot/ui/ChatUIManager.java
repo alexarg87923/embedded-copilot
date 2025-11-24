@@ -15,6 +15,7 @@ import org.eclipse.swt.events.SelectionAdapter;
 import org.eclipse.swt.events.SelectionEvent;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonElement;
 import embeddedcopilot.service.MessageProcessor.Message;
 import embeddedcopilot.service.MessageProcessor;
 
@@ -24,9 +25,291 @@ import embeddedcopilot.service.MessageProcessor;
 public class ChatUIManager {
 
     private final Display display;
+    private boolean debugMode = false; // Set to true to see all messages
+    private Long lastReasoningTimestamp = null; // Track reasoning start time
 
     public ChatUIManager(Display display) {
         this.display = display;
+    }
+
+    /**
+     * Message display action after filtering
+     */
+    public enum DisplayAction {
+        SHOW,           // Display as regular message
+        SHOW_ASK,       // Display as ask message with approve/deny buttons
+        HIDE,           // Don't display
+        DEBUG_ONLY      // Only display if debugMode is enabled
+    }
+
+    /**
+     * Result of message filtering
+     */
+    public static class FilteredMessage {
+        public final DisplayAction action;
+        public final String displayText;
+        public final String rawJson;
+
+        public FilteredMessage(DisplayAction action, String displayText, String rawJson) {
+            this.action = action;
+            this.displayText = displayText;
+            this.rawJson = rawJson;
+        }
+    }
+
+    /**
+     * Enable or disable debug mode to see internal messages
+     */
+    public void setDebugMode(boolean enabled) {
+        this.debugMode = enabled;
+    }
+
+    /**
+     * Filters a ClineService JSON message and determines how to display it
+     * 
+     * @param jsonLine the JSON line from ClineService output
+     * @return FilteredMessage indicating what to do with this message
+     */
+    public FilteredMessage filterClineMessage(String jsonLine) {
+        try {
+            JsonObject json = JsonParser.parseString(jsonLine).getAsJsonObject();
+            
+            // Check if this is a "say" message
+            if (json.has("type") && "say".equals(json.get("type").getAsString())) {
+                return filterSayMessage(json);
+            }
+            
+            // Check if this is an "ask" message
+            if (json.has("type") && "ask".equals(json.get("type").getAsString())) {
+                return filterAskMessage(json);
+            }
+            
+            // Unknown message type - hide by default
+            return new FilteredMessage(DisplayAction.HIDE, null, jsonLine);
+            
+        } catch (Exception e) {
+            // If we can't parse it, hide it
+            System.err.println("[ChatUIManager] Failed to parse message: " + e.getMessage());
+            return new FilteredMessage(DisplayAction.HIDE, null, jsonLine);
+        }
+    }
+
+    /**
+     * Filters "say" type messages
+     */
+    private FilteredMessage filterSayMessage(JsonObject json) {
+        String say = json.has("say") ? json.get("say").getAsString() : "";
+        String text = json.has("text") ? json.get("text").getAsString() : "";
+        long timestamp = json.has("ts") ? json.get("ts").getAsLong() : 0;
+        
+        // Handle reasoning - just store timestamp
+        if ("reasoning".equals(say)) {
+            lastReasoningTimestamp = timestamp;
+            return new FilteredMessage(DisplayAction.HIDE, null, json.toString());
+        }
+        
+        switch (say) {
+            // Messages that should be displayed
+            case "text":
+                return new FilteredMessage(DisplayAction.SHOW, text, json.toString());
+            
+            case "error":
+                return new FilteredMessage(DisplayAction.SHOW, 
+                    "❌ Error: " + text, json.toString());
+            
+            case "completion_result":
+                return new FilteredMessage(DisplayAction.SHOW, 
+                    "✅ " + text, json.toString());
+            
+            // Task progress - show to user
+            case "task_progress":
+                return new FilteredMessage(DisplayAction.SHOW, 
+                    "📋 Task Progress:\n" + text, json.toString());
+            
+            // Command being executed - show to user
+            case "command":
+                return new FilteredMessage(DisplayAction.SHOW, 
+                    "⚡ Running: " + text, json.toString());
+            
+            // Messages that should be hidden (internal state)
+            case "user_feedback":
+            case "user_feedback_diff":
+            case "api_req_started":
+            case "api_req_finished":
+            case "api_req_retried":
+            case "command_output":
+            case "tool":
+            case "browser_action":
+            case "browser_action_launch":
+            case "shell_integration_warning":
+            case "inspect_site_result":
+            case "mcp_server_request_started":
+            case "checkpoint_created":  // Internal checkpoint tracking
+                return new FilteredMessage(DisplayAction.HIDE, null, json.toString());
+            
+            // Messages for debugging only
+            case "api_req_failed":
+            case "api_req_canceled":
+                String debugText = "⚠️ API Request Issue: " + text;
+                return new FilteredMessage(DisplayAction.DEBUG_ONLY, debugText, json.toString());
+            
+            // Unknown say type - hide by default
+            default:
+                System.out.println("[ChatUIManager] Unknown say type: " + say);
+                return new FilteredMessage(DisplayAction.DEBUG_ONLY, 
+                    "[" + say + "] " + text, json.toString());
+        }
+    }
+
+    /**
+     * Filters "ask" type messages
+     */
+    private FilteredMessage filterAskMessage(JsonObject json) {
+        String ask = json.has("ask") ? json.get("ask").getAsString() : "";
+        String text = json.has("text") ? json.get("text").getAsString() : "";
+        
+        switch (ask) {
+            // Ask messages that require user approval with buttons
+            case "tool":
+            case "command":
+            case "api_req_failed":
+            case "resume_task":
+            case "resume_completed_task":
+                // Extract tool information for display
+                String displayText = formatAskMessageForDisplay(json);
+                return new FilteredMessage(DisplayAction.SHOW_ASK, displayText, json.toString());
+            
+            // Completion result - simple acknowledgment
+            case "completion_result":
+                return new FilteredMessage(DisplayAction.SHOW_ASK, "Done :)", json.toString());
+            
+            // Command output - show as regular message (no approve/deny buttons)
+            case "command_output":
+                // Show the output so user can see what's happening, but no buttons
+                return new FilteredMessage(DisplayAction.SHOW, text, json.toString());
+            
+            // Ask messages that should be hidden (handled internally)
+            case "request_limit_reached":
+            case "followup":
+                return new FilteredMessage(DisplayAction.HIDE, null, json.toString());
+            
+            // Unknown ask type - show for safety (better to ask than auto-approve)
+            default:
+                System.out.println("[ChatUIManager] Unknown ask type: " + ask);
+                return new FilteredMessage(DisplayAction.SHOW_ASK, text, json.toString());
+        }
+    }
+
+    /**
+     * Formats an ask message for user-friendly display
+     */
+    private String formatAskMessageForDisplay(JsonObject json) {
+        String ask = json.has("ask") ? json.get("ask").getAsString() : "";
+        String text = json.has("text") ? json.get("text").getAsString() : "";
+        
+        StringBuilder sb = new StringBuilder();
+        
+        switch (ask) {
+            case "tool":
+                sb.append("🔧 Tool Request\n\n");
+                if (json.has("tool")) {
+                    String toolName = json.get("tool").getAsString();
+                    sb.append("Tool: ").append(formatToolName(toolName)).append("\n");
+                }
+                if (json.has("path")) {
+                    sb.append("Path: ").append(json.get("path").getAsString()).append("\n");
+                }
+                if (!text.isEmpty()) {
+                    sb.append("\n").append(text);
+                }
+                break;
+            
+            case "command":
+                sb.append("⚡ Command Execution\n\n");
+                if (json.has("command")) {
+                    sb.append("Command: ").append(json.get("command").getAsString()).append("\n");
+                }
+                if (!text.isEmpty()) {
+                    sb.append("\n").append(text);
+                }
+                break;
+            
+            case "api_req_failed":
+                sb.append("⚠️ API Request Failed\n\n");
+                sb.append(text);
+                break;
+            
+            case "resume_task":
+                sb.append("🔄 Resume Task\n\n");
+                sb.append(text);
+                break;
+            
+            case "resume_completed_task":
+                sb.append("🔄 Resume Completed Task\n\n");
+                sb.append(text);
+                break;
+            
+            default:
+                sb.append(text);
+                break;
+        }
+        
+        return sb.toString();
+    }
+
+    /**
+     * Processes and displays a ClineService message based on filtering rules
+     * 
+     * @param chatComposite the chat composite
+     * @param jsonLine the JSON line from ClineService
+     * @param onApprove callback for ask messages when approved
+     * @param onDeny callback for ask messages when denied
+     */
+    public void processClineMessage(Composite chatComposite, String jsonLine, 
+            java.util.function.Consumer<Composite> onApprove, 
+            java.util.function.Consumer<Composite> onDeny) {
+        
+        FilteredMessage filtered = filterClineMessage(jsonLine);
+        
+        // If we're about to show a message and there was recent reasoning, show thinking duration first
+        if ((filtered.action == DisplayAction.SHOW || filtered.action == DisplayAction.SHOW_ASK) 
+                && lastReasoningTimestamp != null) {
+            try {
+                JsonObject json = JsonParser.parseString(jsonLine).getAsJsonObject();
+                if (json.has("ts")) {
+                    long currentTimestamp = json.get("ts").getAsLong();
+                    long durationMs = currentTimestamp - lastReasoningTimestamp;
+                    long durationSeconds = Math.round(durationMs / 1000.0);
+                    
+                    // Show thinking indicator with duration (rounded to nearest second)
+                    String thinkingMsg = String.format("🤔 Thought for %ds", durationSeconds);
+                    addMessage(chatComposite, thinkingMsg, false);
+                }
+            } catch (Exception e) {
+                System.err.println("[ChatUIManager] Error calculating reasoning duration: " + e.getMessage());
+            }
+            lastReasoningTimestamp = null; // Reset after showing
+        }
+        
+        switch (filtered.action) {
+            case SHOW:
+                addMessage(chatComposite, filtered.displayText, false);
+                break;
+            
+            case SHOW_ASK:
+                addAskMessage(chatComposite, filtered.rawJson, onApprove, onDeny);
+                break;
+            
+            case DEBUG_ONLY:
+                if (debugMode) {
+                    addMessage(chatComposite, "[DEBUG] " + filtered.displayText, false);
+                }
+                break;
+            
+            case HIDE:
+                // Do nothing
+                break;
+        }
     }
 
     /**
@@ -373,25 +656,13 @@ public class ChatUIManager {
     /**
      * Formats the tool ask message JSON into a user-friendly display string
      * Only shows tool name and path, not content or workspace information
+     * 
+     * @deprecated Use formatAskMessageForDisplay instead
      */
     private String formatToolAskMessage(String toolJsonText) {
         try {
             JsonObject toolObj = JsonParser.parseString(toolJsonText).getAsJsonObject();
-            StringBuilder sb = new StringBuilder();
-
-            if (toolObj.has("tool")) {
-                String toolName = toolObj.get("tool").getAsString();
-                sb.append("Tool: ").append(formatToolName(toolName));
-            }
-
-            if (toolObj.has("path")) {
-                if (sb.length() > 0) {
-                    sb.append("\n");
-                }
-                sb.append("Path: ").append(toolObj.get("path").getAsString());
-            }
-
-            return sb.toString();
+            return formatAskMessageForDisplay(toolObj);
         } catch (Exception e) {
             // If parsing fails, return a simple message
             return "Tool operation";
