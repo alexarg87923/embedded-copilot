@@ -30,6 +30,8 @@ import embeddedcopilot.service.TaskPollingService;
 import embeddedcopilot.service.MessageProcessor;
 import embeddedcopilot.service.MessageProcessor.Message;
 import embeddedcopilot.ui.ChatUIManager;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -57,7 +59,9 @@ public class SampleView extends ViewPart {
 
     private List<ChatHistory> chatHistories = new ArrayList<>();
     private int chatCounter = 0;
-    private Composite currentAskMessageContainer = null; // Track current ask message to hide buttons
+    private org.eclipse.ui.IEditorPart currentDiffEditor = null; // Track diff editor (real workspace file)
+    private String currentDiffFilePath = null; // Track the file path being edited
+    private java.io.File currentBackupFile = null; // Track backup file for rollback
 
     @Override
     public void createPartControl(Composite parent) {
@@ -439,8 +443,38 @@ public class SampleView extends ViewPart {
 				// Use the new filtering logic for all other messages
 				if (msg.rawJson != null) {
 					String jsonLine = msg.rawJson.toString();
+					
+					// Check if this is an editedExistingFile tool request and show diff
+					if (msg.askType != null && msg.askType.equals("tool") && msg.text != null) {
+						try {
+							JsonObject toolJson = JsonParser.parseString(msg.text).getAsJsonObject();
+							if (toolJson.has("tool") && toolJson.get("tool").getAsString().equals("editedExistingFile")) {
+								String filePath = toolJson.has("path") ? toolJson.get("path").getAsString() : null;
+								String diffContent = toolJson.has("content") ? toolJson.get("content").getAsString() : null;
+								if (filePath != null && diffContent != null) {
+									// Clean up previous diff state
+									cleanupPreviousDiff();
+
+									// Store the file path for later use
+									currentDiffFilePath = filePath;
+
+									// Show diff view on UI thread (required for Eclipse workbench access)
+									display.asyncExec(() -> {
+										projectService.showDiffView(filePath, diffContent, (editor, backupFile) -> {
+											// Track the opened editor and backup file
+											currentDiffEditor = editor;
+											currentBackupFile = backupFile;
+										});
+									});
+								}
+							}
+						} catch (Exception e) {
+							System.out.println("[SampleView] Error parsing tool JSON for diff: " + e.getMessage());
+						}
+					}
+					
 					chatUIManager.processClineMessage(
-						chatComposite, 
+						chatComposite,
 						jsonLine,
 						(askContainer) -> handleApprove(chatComposite, askContainer),
 						(askContainer) -> handleDeny(chatComposite, askContainer)
@@ -490,28 +524,67 @@ public class SampleView extends ViewPart {
     }
 
     /**
+     * Cleans up previous diff state (backup file, editor, etc.)
+     */
+    private void cleanupPreviousDiff() {
+        // If there's a pending diff, clean it up
+        if (currentBackupFile != null) {
+            // Delete backup file since user didn't approve or deny
+            if (currentBackupFile.exists()) {
+                currentBackupFile.delete();
+                System.out.println("[SampleView] Deleted abandoned backup file");
+            }
+            currentBackupFile = null;
+        }
+        currentDiffEditor = null;
+        currentDiffFilePath = null;
+    }
+
+    /**
      * Handles approve button click
      */
     private void handleApprove(Composite chatComposite, Composite askContainer) {
         System.out.println("[handleApprove] User approved");
-        
+
+        // Check if this is a stale button click (user already sent a new message)
+        if (currentBackupFile == null) {
+            System.out.println("[handleApprove] No active diff to approve (stale button click)");
+            if (askContainer != null) {
+                chatUIManager.hideAskButtons(askContainer);
+            }
+            display.asyncExec(() -> {
+                chatUIManager.addMessage(chatComposite, "⚠ This approval is no longer valid (you sent a new message)", false);
+            });
+            return;
+        }
+
         // Hide buttons immediately
         if (askContainer != null) {
             chatUIManager.hideAskButtons(askContainer);
         }
-        currentAskMessageContainer = null;
-        
+
+        // Delete backup file since changes are approved
+        if (currentBackupFile != null && currentBackupFile.exists()) {
+            currentBackupFile.delete();
+            System.out.println("[SampleView] Deleted backup file (changes approved)");
+        }
+        currentBackupFile = null;
+        currentDiffEditor = null;
+        currentDiffFilePath = null;
+
         new Thread(() -> {
             try {
                 String output = clineService.sendAskResponse(true);
                 System.out.println("[handleApprove] Output: " + output);
-                
-                // Refresh package explorer after tool approval (tool will be executed)
+
+                // Refresh package explorer after tool approval
                 projectService.refreshPackageExplorer();
-                
+
                 display.asyncExec(() -> {
                     chatUIManager.addMessage(chatComposite, "✓ Approved", false);
-                    // Polling continues automatically - no need to restart
+
+                    // Restart polling since we stopped it when we received the tool request
+                    startPolling(chatComposite, null);
                 });
             } catch (Exception ex) {
                 System.out.println("[handleApprove] Exception: " + ex.getMessage());
@@ -528,21 +601,46 @@ public class SampleView extends ViewPart {
      */
     private void handleDeny(Composite chatComposite, Composite askContainer) {
         System.out.println("[handleDeny] User denied");
-        
+
+        // Check if this is a stale button click (user already sent a new message)
+        if (currentBackupFile == null) {
+            System.out.println("[handleDeny] No active diff to deny (stale button click)");
+            if (askContainer != null) {
+                chatUIManager.hideAskButtons(askContainer);
+            }
+            display.asyncExec(() -> {
+                chatUIManager.addMessage(chatComposite, "⚠ This denial is no longer valid (you sent a new message)", false);
+            });
+            return;
+        }
+
         // Hide buttons immediately
         if (askContainer != null) {
             chatUIManager.hideAskButtons(askContainer);
         }
-        currentAskMessageContainer = null;
-        
+
+        // Restore file from backup since changes are denied
+        final String filePath = currentDiffFilePath;
+        final java.io.File backupFile = currentBackupFile;
+
+        if (filePath != null && backupFile != null) {
+            projectService.restoreFromBackup(filePath, backupFile);
+            System.out.println("[SampleView] Restoring file from backup (changes denied)");
+        }
+
+        currentBackupFile = null;
+        currentDiffEditor = null;
+        currentDiffFilePath = null;
+
         new Thread(() -> {
             try {
                 String output = clineService.sendAskResponse(false);
                 System.out.println("[handleDeny] Output: " + output);
-                
+
                 display.asyncExec(() -> {
                     chatUIManager.addMessage(chatComposite, "✗ Denied", false);
-                    // Polling continues automatically - no need to restart
+                    // Restart polling since we stopped it when we received the tool request
+                    startPolling(chatComposite, null);
                 });
             } catch (Exception ex) {
                 System.out.println("[handleDeny] Exception: " + ex.getMessage());
@@ -572,6 +670,11 @@ public class SampleView extends ViewPart {
 		if (activeTab == null) return;
 
 		Composite chatComposite = (Composite) activeTab.getControl();
+
+		// Clean up any pending diff state (backup file will be deleted)
+		// This invalidates any pending approve/deny buttons
+		cleanupPreviousDiff();
+
 		chatUIManager.addMessage(chatComposite, message, true);
 
 		if (activeTab.getText().startsWith("Chat ") || activeTab.getText().equals("Creating chat...")) {

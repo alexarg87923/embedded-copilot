@@ -40,14 +40,12 @@ public class TaskPollingService {
             shouldStopPolling = false;
 
             pollingThread = new Thread(() -> {
-                int noUpdateCount = 0;
                 int pollCount = 0;
 
                 try {
-                    while (!shouldStopPolling) {
+                    pollingLoop: while (!shouldStopPolling) {
                         long startTime = System.currentTimeMillis();
                         pollCount++;
-                        boolean hadAnyUpdateThisPoll = false;
 
                         try {
                             String jsonOutput = clineService.getTaskViewJson();
@@ -67,13 +65,18 @@ public class TaskPollingService {
                                             Message msg = messageProcessor.process(root);
                                             
                                             if (msg != null) {
-                                                hadAnyUpdateThisPoll = true;
-                                                noUpdateCount = 0;
-                                                
                                                 // Send all messages (including ASK_REQUIRES_APPROVAL) to the main callback
                                                 // The ChatUIManager filtering will handle display logic
                                                 if (onMessage != null) {
                                                     onMessage.accept(msg);
+                                                }
+                                                
+                                                // Check if polling should stop based on this message
+                                                String stopReason = shouldStopPolling(msg);
+                                                if (stopReason != null) {
+                                                    System.out.println("[TaskPollingService] " + stopReason);
+                                                    shouldStopPolling = true;
+                                                    break pollingLoop;
                                                 }
                                                 
                                                 // Check if tool was used (for refreshing package explorer)
@@ -99,16 +102,6 @@ public class TaskPollingService {
                                         }
                                     }
                                 }
-                            }
-
-                            // Only increment noUpdateCount once per cycle if there were no updates
-                            if (!hadAnyUpdateThisPoll) {
-                                noUpdateCount++;
-                            }
-                            
-                            if (noUpdateCount >= PollingConfig.getMaxNoUpdatePolls()) {
-                                System.out.println("[TaskPollingService] Reached max no-update polls (" + noUpdateCount + "), stopping");
-                                break;
                             }
 
                             long elapsedTime = System.currentTimeMillis() - startTime;
@@ -186,5 +179,32 @@ public class TaskPollingService {
      */
     public boolean isPolling() {
         return pollingThread != null && pollingThread.isAlive() && !shouldStopPolling;
+    }
+    
+    /**
+     * Determines if polling should stop based on the received message.
+     * Returns a reason string if polling should stop, null otherwise.
+     *
+     * @param msg the message to check
+     * @return reason string if polling should stop, null if polling should continue
+     */
+    private String shouldStopPolling(Message msg) {
+        // Stop polling if we receive an "ask" message requesting tool usage
+        if (msg.askType != null && msg.askType.equals("tool")) {
+            return "Received tool request (ask), stopping polling";
+        }
+
+        // Stop polling if we receive a completion_result (task finished)
+        if (msg.askType != null && msg.askType.equals("completion_result")) {
+            return "Task completed (completion_result), stopping polling";
+        }
+
+        // Add more stop conditions here as needed
+        // Example:
+        // if (someOtherCondition) {
+        //     return "Some other reason to stop polling";
+        // }
+
+        return null; // Continue polling
     }
 }

@@ -179,9 +179,9 @@ public class ChatUIManager {
                 String displayText = formatAskMessageForDisplay(json);
                 return new FilteredMessage(DisplayAction.SHOW_ASK, displayText, json.toString());
             
-            // Completion result - simple acknowledgment
+            // Completion result - simple acknowledgment (no buttons needed)
             case "completion_result":
-                return new FilteredMessage(DisplayAction.SHOW_ASK, "Done :)", json.toString());
+                return new FilteredMessage(DisplayAction.SHOW, "✅ Task completed", json.toString());
             
             // Command output - show as regular message (no approve/deny buttons)
             case "command_output":
