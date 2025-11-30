@@ -3,7 +3,10 @@ package embeddedcopilot.ui;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.custom.ScrolledComposite;
 import org.eclipse.swt.custom.StyledText;
+import org.eclipse.swt.custom.StyleRange;
 import org.eclipse.swt.graphics.Color;
+import org.eclipse.swt.graphics.Font;
+import org.eclipse.swt.graphics.FontData;
 import org.eclipse.swt.layout.GridData;
 import org.eclipse.swt.layout.GridLayout;
 import org.eclipse.swt.widgets.Composite;
@@ -18,6 +21,10 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonElement;
 import embeddedcopilot.service.MessageProcessor.Message;
 import embeddedcopilot.service.MessageProcessor;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Manager for chat UI components and message rendering
@@ -421,7 +428,7 @@ public class ChatUIManager {
 
     /**
      * Synchronously adds a message (must be called from UI thread)
-     * 
+     *
      * @param chatComposite the chat composite
      * @param text the message text
      * @param isUser true if this is a user message, false if AI
@@ -459,12 +466,18 @@ public class ChatUIManager {
         bubble.setBackground(bubbleColor);
 
         StyledText messageText = new StyledText(bubble, SWT.WRAP | SWT.READ_ONLY);
-        messageText.setText(text);
         messageText.setBackground(bubbleColor);
         messageText.setWordWrap(true);
         GridData textData = new GridData(SWT.FILL, SWT.CENTER, true, false);
         textData.widthHint = 0;
         messageText.setLayoutData(textData);
+
+        // Apply markdown rendering for AI messages
+        if (!isUser) {
+            applyMarkdownStyling(messageText, text, bubbleColor);
+        } else {
+            messageText.setText(text);
+        }
 
         messageContainer.setData("messageText", messageText);
 
@@ -490,6 +503,261 @@ public class ChatUIManager {
                 scrolled.setOrigin(0, newMaxScrollY);
             });
         }
+    }
+
+    /**
+     * Applies markdown styling to a StyledText widget.
+     * Handles checkboxes, code blocks, inline code, bold, italic, and headers.
+     */
+    private void applyMarkdownStyling(StyledText styledText, String text, Color backgroundColor) {
+        List<StyleRange> styleRanges = new ArrayList<>();
+        StringBuilder plainText = new StringBuilder();
+
+        // Track fonts and colors to dispose later
+        List<Font> fontsToDispose = new ArrayList<>();
+        List<Color> colorsToDispose = new ArrayList<>();
+
+        // Process text line by line to handle different markdown elements
+        String[] lines = text.split("\n", -1);
+        int currentPos = 0;
+
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i];
+            int lineStart = currentPos;
+
+            // Handle checkboxes (task list items)
+            if (line.matches("^\\s*-\\s*\\[[ x]\\].*")) {
+                Matcher checkboxMatcher = Pattern.compile("^(\\s*-\\s*)(\\[[ x]\\])(.*)").matcher(line);
+                if (checkboxMatcher.find()) {
+                    String prefix = checkboxMatcher.group(1);
+                    String checkbox = checkboxMatcher.group(2);
+                    String content = checkboxMatcher.group(3);
+
+                    plainText.append(prefix);
+                    currentPos += prefix.length();
+
+                    // Add checkbox with special styling
+                    String checkboxSymbol = checkbox.equals("[x]") ? "☑" : "☐";
+                    plainText.append(checkboxSymbol);
+
+                    StyleRange checkboxStyle = new StyleRange();
+                    checkboxStyle.start = currentPos;
+                    checkboxStyle.length = checkboxSymbol.length();
+                    if (checkbox.equals("[x]")) {
+                        Color checkedColor = new Color(display, 76, 175, 80);  // Green for checked
+                        colorsToDispose.add(checkedColor);
+                        checkboxStyle.foreground = checkedColor;
+                    } else {
+                        checkboxStyle.foreground = display.getSystemColor(SWT.COLOR_DARK_GRAY);  // Gray for unchecked
+                    }
+                    checkboxStyle.fontStyle = SWT.BOLD;
+                    styleRanges.add(checkboxStyle);
+
+                    currentPos += checkboxSymbol.length();
+                    plainText.append(content);
+                    currentPos += content.length();
+                }
+            }
+            // Handle headers (# ## ###)
+            else if (line.matches("^#{1,6}\\s+.*")) {
+                Matcher headerMatcher = Pattern.compile("^(#{1,6})\\s+(.*)").matcher(line);
+                if (headerMatcher.find()) {
+                    String hashes = headerMatcher.group(1);
+                    String headerText = headerMatcher.group(2);
+
+                    plainText.append(headerText);
+
+                    // Create bold, larger font for headers
+                    FontData[] fontData = styledText.getFont().getFontData();
+                    FontData headerFontData = new FontData(fontData[0].getName(),
+                        fontData[0].getHeight() + (4 - hashes.length()), SWT.BOLD);
+                    Font headerFont = new Font(display, headerFontData);
+                    fontsToDispose.add(headerFont);
+
+                    StyleRange headerStyle = new StyleRange();
+                    headerStyle.start = currentPos;
+                    headerStyle.length = headerText.length();
+                    headerStyle.font = headerFont;
+                    headerStyle.foreground = display.getSystemColor(SWT.COLOR_DARK_BLUE);
+                    styleRanges.add(headerStyle);
+
+                    currentPos += headerText.length();
+                }
+            }
+            // Regular line - process inline markdown
+            else {
+                currentPos = processInlineMarkdown(line, plainText, styleRanges, currentPos, fontsToDispose, colorsToDispose, backgroundColor);
+            }
+
+            // Add newline if not the last line
+            if (i < lines.length - 1) {
+                plainText.append("\n");
+                currentPos++;
+            }
+        }
+
+        // Set the plain text (with markdown removed)
+        styledText.setText(plainText.toString());
+
+        // Apply all style ranges
+        for (StyleRange style : styleRanges) {
+            try {
+                styledText.setStyleRange(style);
+            } catch (Exception e) {
+                System.err.println("[ChatUIManager] Error applying style range: " + e.getMessage());
+            }
+        }
+
+        // Dispose fonts and colors when widget is disposed
+        styledText.addDisposeListener(e -> {
+            for (Font font : fontsToDispose) {
+                if (font != null && !font.isDisposed()) {
+                    font.dispose();
+                }
+            }
+            for (Color color : colorsToDispose) {
+                if (color != null && !color.isDisposed()) {
+                    color.dispose();
+                }
+            }
+        });
+    }
+
+    /**
+     * Processes inline markdown within a line (bold, italic, code, etc.)
+     */
+    private int processInlineMarkdown(String line, StringBuilder plainText,
+            List<StyleRange> styleRanges, int currentPos, List<Font> fontsToDispose,
+            List<Color> colorsToDispose, Color backgroundColor) {
+
+        int pos = 0;
+
+        // Handle code blocks first (```)
+        Pattern codeBlockPattern = Pattern.compile("```([\\s\\S]*?)```");
+        Matcher codeBlockMatcher = codeBlockPattern.matcher(line);
+
+        if (codeBlockMatcher.find()) {
+            // Add text before code block
+            if (codeBlockMatcher.start() > 0) {
+                String before = line.substring(0, codeBlockMatcher.start());
+                plainText.append(before);
+                currentPos += before.length();
+            }
+
+            // Add code block content with styling
+            String code = codeBlockMatcher.group(1);
+            plainText.append(code);
+
+            FontData[] fontData = plainText.toString().isEmpty() ?
+                display.getSystemFont().getFontData() :
+                display.getSystemFont().getFontData();
+            Font codeFont = new Font(display, "Courier New", fontData[0].getHeight(), SWT.NORMAL);
+            fontsToDispose.add(codeFont);
+
+            Color codeBackground = new Color(display, 240, 240, 240);
+            Color codeForeground = new Color(display, 200, 0, 0);
+            colorsToDispose.add(codeBackground);
+            colorsToDispose.add(codeForeground);
+
+            StyleRange codeStyle = new StyleRange();
+            codeStyle.start = currentPos;
+            codeStyle.length = code.length();
+            codeStyle.font = codeFont;
+            codeStyle.background = codeBackground;
+            codeStyle.foreground = codeForeground;
+            styleRanges.add(codeStyle);
+
+            currentPos += code.length();
+
+            // Add text after code block
+            if (codeBlockMatcher.end() < line.length()) {
+                String after = line.substring(codeBlockMatcher.end());
+                plainText.append(after);
+                currentPos += after.length();
+            }
+
+            return currentPos;
+        }
+
+        // Process character by character for inline code, bold, italic
+        while (pos < line.length()) {
+            // Check for inline code `code`
+            if (line.charAt(pos) == '`' && pos + 1 < line.length()) {
+                int endPos = line.indexOf('`', pos + 1);
+                if (endPos > pos) {
+                    String code = line.substring(pos + 1, endPos);
+                    plainText.append(code);
+
+                    FontData[] fontData = display.getSystemFont().getFontData();
+                    Font codeFont = new Font(display, "Courier New", fontData[0].getHeight(), SWT.NORMAL);
+                    fontsToDispose.add(codeFont);
+
+                    Color codeBackground = new Color(display, 240, 240, 240);
+                    Color codeForeground = new Color(display, 200, 0, 0);
+                    colorsToDispose.add(codeBackground);
+                    colorsToDispose.add(codeForeground);
+
+                    StyleRange codeStyle = new StyleRange();
+                    codeStyle.start = currentPos;
+                    codeStyle.length = code.length();
+                    codeStyle.font = codeFont;
+                    codeStyle.background = codeBackground;
+                    codeStyle.foreground = codeForeground;
+                    styleRanges.add(codeStyle);
+
+                    currentPos += code.length();
+                    pos = endPos + 1;
+                    continue;
+                }
+            }
+
+            // Check for bold **text**
+            if (pos + 1 < line.length() && line.charAt(pos) == '*' && line.charAt(pos + 1) == '*') {
+                int endPos = line.indexOf("**", pos + 2);
+                if (endPos > pos) {
+                    String boldText = line.substring(pos + 2, endPos);
+                    plainText.append(boldText);
+
+                    StyleRange boldStyle = new StyleRange();
+                    boldStyle.start = currentPos;
+                    boldStyle.length = boldText.length();
+                    boldStyle.fontStyle = SWT.BOLD;
+                    styleRanges.add(boldStyle);
+
+                    currentPos += boldText.length();
+                    pos = endPos + 2;
+                    continue;
+                }
+            }
+
+            // Check for italic *text* (but not part of **)
+            if (line.charAt(pos) == '*' &&
+                (pos == 0 || line.charAt(pos - 1) != '*') &&
+                (pos + 1 >= line.length() || line.charAt(pos + 1) != '*')) {
+                int endPos = line.indexOf('*', pos + 1);
+                if (endPos > pos && (endPos + 1 >= line.length() || line.charAt(endPos + 1) != '*')) {
+                    String italicText = line.substring(pos + 1, endPos);
+                    plainText.append(italicText);
+
+                    StyleRange italicStyle = new StyleRange();
+                    italicStyle.start = currentPos;
+                    italicStyle.length = italicText.length();
+                    italicStyle.fontStyle = SWT.ITALIC;
+                    styleRanges.add(italicStyle);
+
+                    currentPos += italicText.length();
+                    pos = endPos + 1;
+                    continue;
+                }
+            }
+
+            // Regular character
+            plainText.append(line.charAt(pos));
+            currentPos++;
+            pos++;
+        }
+
+        return currentPos;
     }
 
     /**

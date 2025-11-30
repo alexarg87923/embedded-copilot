@@ -642,17 +642,28 @@ public class ClineService {
 
     /**
      * Sends an ask response (approve or deny) to the current Cline task
-     * 
+     *
      * @param approve true to approve, false to deny
+     * @param feedback optional user feedback to send with the response
      * @return the command output
      * @throws Exception if sending fails
      */
-    public String sendAskResponse(boolean approve) throws Exception {
-        System.out.println("[ClineService] Sending ask response: " + (approve ? "approve" : "deny"));
-        String approveValue = approve ? "true" : "false";
-        String output = executeClineCommand("-v", "task", "send", "-a", approveValue);
-        System.out.println("[ClineService] Output from cline task send -a " + approveValue + ": " + output);
-        return output;
+    public String sendAskResponse(boolean approve, String feedback) throws Exception {
+        System.out.println("[ClineService] Sending ask response: " + (approve ? "approve" : "deny") +
+                          " with feedback: " + (feedback != null && !feedback.isEmpty() ? feedback : "(none)"));
+
+        // Use empty string if feedback is null
+        String feedbackValue = (feedback != null) ? feedback : "";
+
+        if (approve) {
+            String output = executeClineCommand("-v", "task", "send", "-a", feedbackValue);
+            System.out.println("[ClineService] Output from cline task send -a: " + output);
+            return output;
+        } else {
+            String output = executeClineCommand("-v", "task", "send", "-d", feedbackValue);
+            System.out.println("[ClineService] Output from cline task send -d: " + output);
+            return output;
+        }
     }
 
     /**

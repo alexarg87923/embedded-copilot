@@ -135,6 +135,14 @@ public class TaskPollingService {
         messageProcessor.startNewPrompt(prompt);
     }
 
+    /**
+     * Updates the prompt for the next message without clearing conversation history.
+     * Use this when sending subsequent messages in an ongoing conversation.
+     */
+    public void updatePrompt(String prompt) {
+        messageProcessor.updatePrompt(prompt);
+    }
+
 
     /**
      * Stops the polling thread (internal method, does not acquire lock)
@@ -192,6 +200,11 @@ public class TaskPollingService {
         // Stop polling if we receive an "ask" message requesting tool usage
         if (msg.askType != null && msg.askType.equals("tool")) {
             return "Received tool request (ask), stopping polling";
+        }
+
+        // Stop polling if we receive an "ask" message requesting command execution
+        if (msg.askType != null && msg.askType.equals("command")) {
+            return "Received command request (ask), stopping polling";
         }
 
         // Stop polling if we receive a completion_result (task finished)

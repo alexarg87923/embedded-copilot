@@ -36,6 +36,16 @@ public class MessageProcessor {
     }
 
     /**
+     * Updates the last prompt without clearing conversation history.
+     * Use this for subsequent messages in an ongoing conversation.
+     */
+    public void updatePrompt(String prompt) {
+        lastPrompt = prompt;
+        echoTs = null;
+        // DON'T clear processedIds - keep conversation history!
+    }
+
+    /**
      * Processes a JSON message and returns a Message object if it should be displayed
      */
     public Message process(JsonObject root) {

@@ -33,8 +33,11 @@ import embeddedcopilot.ui.ChatUIManager;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Function;
 
 /**
@@ -62,6 +65,9 @@ public class SampleView extends ViewPart {
     private org.eclipse.ui.IEditorPart currentDiffEditor = null; // Track diff editor (real workspace file)
     private String currentDiffFilePath = null; // Track the file path being edited
     private java.io.File currentBackupFile = null; // Track backup file for rollback
+    private volatile boolean hasPendingApproval = false; // Track if there's ANY pending approval (file diff or command)
+    private volatile boolean alreadyAutoApproved = false; // Track if we already auto-approved (to prevent double approval)
+    private Set<String> displayedMessageIds = new HashSet<>(); // Track displayed messages to prevent duplicates
 
     @Override
     public void createPartControl(Composite parent) {
@@ -405,7 +411,7 @@ public class SampleView extends ViewPart {
 
                 System.out.println("[createNewChat Thread] About to start polling...");
 
-                startPolling(chatComposite, messageCopy);
+                startPolling(chatComposite, messageCopy, true); // true = new chat
                 
                 System.out.println("[createNewChat Thread] Polling started");
 
@@ -424,12 +430,27 @@ public class SampleView extends ViewPart {
 
     /**
      * Starts polling for task updates using TaskPollingService
+     * 
+     * @param chatComposite the chat composite to display messages in
+     * @param skipFirstEchoText the first message text (for new chats) or null (for existing chats)
+     * @param isNewChat true if this is a new chat (clears history), false if continuing existing chat (preserves history)
      */
-	private void startPolling(Composite chatComposite, String skipFirstEchoText) {
-		System.out.println("[startPolling] Starting polling with TaskPollingService");
+	private void startPolling(Composite chatComposite, String skipFirstEchoText, boolean isNewChat) {
+		System.out.println("[startPolling] Starting polling with TaskPollingService, isNewChat=" + isNewChat);
 
 		if (skipFirstEchoText != null && !skipFirstEchoText.isEmpty()) {
-			pollingService.setLastPrompt(skipFirstEchoText);
+			if (isNewChat) {
+				// New chat → use setLastPrompt() which clears processedIds history
+				pollingService.setLastPrompt(skipFirstEchoText);
+				// Also clear displayedMessageIds for new chat
+				displayedMessageIds.clear();
+			} else {
+				// Existing chat → use updatePrompt() which preserves processedIds history
+				pollingService.updatePrompt(skipFirstEchoText);
+			}
+		} else if (isNewChat) {
+			// New chat but no skipFirstEchoText - still clear displayedMessageIds
+			displayedMessageIds.clear();
 		}
 
 		pollingService.startPolling(
@@ -439,46 +460,93 @@ public class SampleView extends ViewPart {
 				if (msg.type == Message.Type.USER) {
 					return;
 				}
-				
+
+				// Check if this message has already been displayed (deduplication)
+				String messageId = createMessageId(msg);
+				if (displayedMessageIds.contains(messageId)) {
+					System.out.println("[startPolling] Skipping duplicate message: " + messageId);
+					return;
+				}
+
 				// Use the new filtering logic for all other messages
 				if (msg.rawJson != null) {
 					String jsonLine = msg.rawJson.toString();
-					
-					// Check if this is an editedExistingFile tool request and show diff
+
+					// Check if this is a file edit or creation tool request and show diff
 					if (msg.askType != null && msg.askType.equals("tool") && msg.text != null) {
 						try {
 							JsonObject toolJson = JsonParser.parseString(msg.text).getAsJsonObject();
-							if (toolJson.has("tool") && toolJson.get("tool").getAsString().equals("editedExistingFile")) {
+							String toolType = toolJson.has("tool") ? toolJson.get("tool").getAsString() : null;
+							
+							// Handle both editedExistingFile and newFileCreated
+							if (toolType != null && (toolType.equals("editedExistingFile") || toolType.equals("newFileCreated"))) {
 								String filePath = toolJson.has("path") ? toolJson.get("path").getAsString() : null;
-								String diffContent = toolJson.has("content") ? toolJson.get("content").getAsString() : null;
-								if (filePath != null && diffContent != null) {
+								if (filePath != null) {
 									// Clean up previous diff state
 									cleanupPreviousDiff();
 
 									// Store the file path for later use
 									currentDiffFilePath = filePath;
 
-									// Show diff view on UI thread (required for Eclipse workbench access)
-									display.asyncExec(() -> {
-										projectService.showDiffView(filePath, diffContent, (editor, backupFile) -> {
-											// Track the opened editor and backup file
-											currentDiffEditor = editor;
-											currentBackupFile = backupFile;
-										});
-									});
+									// Auto-approve in background, save backup, wait for Cline to apply, then show diff
+									new Thread(() -> {
+										try {
+											// Save backup first
+											File backupFile = projectService.saveBackup(filePath);
+											if (backupFile != null) {
+												currentBackupFile = backupFile;
+												System.out.println("[SampleView] Saved backup before auto-approving: " + filePath);
+											}
+
+											// Auto-approve (Cline will apply changes)
+											clineService.sendAskResponse(true, "");
+											alreadyAutoApproved = true; // Mark that we already approved
+											System.out.println("[SampleView] Auto-approved tool request, waiting for Cline to apply changes...");
+
+											// Wait a bit for Cline to apply changes
+											Thread.sleep(1000);
+
+											// Now show diff view (file should be modified by Cline now)
+											display.asyncExec(() -> {
+												projectService.showDiffViewFromBackup(filePath, backupFile, (editor) -> {
+													// Track the opened editor
+													currentDiffEditor = editor;
+												});
+											});
+										} catch (Exception e) {
+											System.err.println("[SampleView] Error auto-approving and showing diff: " + e.getMessage());
+											e.printStackTrace();
+										}
+									}, "AutoApproveAndShowDiffThread").start();
 								}
 							}
 						} catch (Exception e) {
 							System.out.println("[SampleView] Error parsing tool JSON for diff: " + e.getMessage());
 						}
 					}
-					
+
+					// Check if this message will show approval buttons
+					// These are the ask types that require approval (from ChatUIManager.filterAskMessage)
+					if (msg.askType != null &&
+					    (msg.askType.equals("tool") ||
+					     msg.askType.equals("command") ||
+					     msg.askType.equals("api_req_failed") ||
+					     msg.askType.equals("resume_task") ||
+					     msg.askType.equals("resume_completed_task"))) {
+						hasPendingApproval = true;
+						System.out.println("[SampleView] Pending approval detected: " + msg.askType);
+					}
+
 					chatUIManager.processClineMessage(
 						chatComposite,
 						jsonLine,
 						(askContainer) -> handleApprove(chatComposite, askContainer),
 						(askContainer) -> handleDeny(chatComposite, askContainer)
 					);
+					
+					// Mark this message as displayed
+					displayedMessageIds.add(messageId);
+					System.out.println("[startPolling] Added message to displayedMessageIds: " + messageId + " (total: " + displayedMessageIds.size() + ")");
 				}
 			}),
 			() -> System.out.println("[startPolling] Polling completed"),
@@ -493,6 +561,26 @@ public class SampleView extends ViewPart {
 			})
 		);
 	}
+
+    /**
+     * Creates a unique message ID for deduplication purposes
+     * Uses timestamp, type, sayType, and askType to create a unique identifier
+     */
+    private String createMessageId(Message msg) {
+        if (msg.rawJson == null) {
+            // Fallback: use text content if no JSON
+            return "msg_" + (msg.text != null ? msg.text.hashCode() : System.currentTimeMillis());
+        }
+        
+        // Extract timestamp and type from JSON for unique ID
+        long ts = msg.rawJson.has("ts") ? msg.rawJson.get("ts").getAsLong() : 0;
+        String type = msg.rawJson.has("type") ? msg.rawJson.get("type").getAsString() : "";
+        String say = msg.rawJson.has("say") ? msg.rawJson.get("say").getAsString() : "";
+        String ask = msg.rawJson.has("ask") ? msg.rawJson.get("ask").getAsString() : "";
+        
+        // Create unique ID similar to MessageProcessor's approach
+        return ts + "_" + type + "_" + say + "_" + ask;
+    }
 
     /**
      * Shows the history view and hides the tab folder
@@ -538,6 +626,10 @@ public class SampleView extends ViewPart {
         }
         currentDiffEditor = null;
         currentDiffFilePath = null;
+        alreadyAutoApproved = false; // Reset auto-approval flag
+        
+        // Note: We don't clear hasPendingApproval here because it's handled separately in sendMessage
+        // This allows command approvals (which don't have backup files) to be properly tracked
     }
 
     /**
@@ -547,8 +639,8 @@ public class SampleView extends ViewPart {
         System.out.println("[handleApprove] User approved");
 
         // Check if this is a stale button click (user already sent a new message)
-        if (currentBackupFile == null) {
-            System.out.println("[handleApprove] No active diff to approve (stale button click)");
+        if (!hasPendingApproval) {
+            System.out.println("[handleApprove] No active approval to process (stale button click)");
             if (askContainer != null) {
                 chatUIManager.hideAskButtons(askContainer);
             }
@@ -558,33 +650,76 @@ public class SampleView extends ViewPart {
             return;
         }
 
+        // Get any feedback the user typed (but didn't send)
+        String feedback = inputField.getText().trim();
+
+        // Clear the pending approval flag
+        hasPendingApproval = false;
+
         // Hide buttons immediately
         if (askContainer != null) {
             chatUIManager.hideAskButtons(askContainer);
         }
 
-        // Delete backup file since changes are approved
-        if (currentBackupFile != null && currentBackupFile.exists()) {
-            currentBackupFile.delete();
-            System.out.println("[SampleView] Deleted backup file (changes approved)");
-        }
+        // Save file path and backup file before clearing them (needed for restore)
+        final String filePath = currentDiffFilePath;
+        final java.io.File backupFile = currentBackupFile;
+        
+        // Clear state immediately (restore will happen in thread)
         currentBackupFile = null;
         currentDiffEditor = null;
         currentDiffFilePath = null;
 
+        // Clear input field since we're using the text as feedback
+        if (!feedback.isEmpty()) {
+            inputField.setText("");
+        }
+
         new Thread(() -> {
             try {
-                String output = clineService.sendAskResponse(true);
-                System.out.println("[handleApprove] Output: " + output);
+                // Changes are already applied by Cline (we auto-approved), so just clean up
+                // Delete backup file since changes are approved
+                if (backupFile != null && backupFile.exists()) {
+                    backupFile.delete();
+                    System.out.println("[SampleView] Deleted backup file (changes approved)");
+                }
+                
+                // Clear diff highlights from the editor
+                if (filePath != null) {
+                    projectService.clearDiffHighlights(filePath);
+                    System.out.println("[SampleView] Cleared diff highlights after approve");
+                }
+                
+                // If we already auto-approved, don't send another approve (would be double approval)
+                // Just send feedback as a regular message if provided
+                if (alreadyAutoApproved) {
+                    System.out.println("[handleApprove] Already auto-approved, skipping duplicate approve signal");
+                    if (!feedback.isEmpty()) {
+                        // Send feedback as a regular message
+                        clineService.sendMessage(feedback);
+                        System.out.println("[handleApprove] Sent feedback as regular message: " + feedback);
+                    }
+                } else {
+                    // Normal approve flow (for non-file-diff approvals like commands)
+                    String output = clineService.sendAskResponse(true, feedback);
+                    System.out.println("[handleApprove] Output: " + output);
+                }
+                
+                // Reset the flag
+                alreadyAutoApproved = false;
 
                 // Refresh package explorer after tool approval
                 projectService.refreshPackageExplorer();
 
+                final String feedbackCopy = feedback;
                 display.asyncExec(() -> {
-                    chatUIManager.addMessage(chatComposite, "✓ Approved", false);
+                    String approveMsg = feedbackCopy.isEmpty()
+                        ? "✓ Approved"
+                        : "✓ Approved with feedback: " + feedbackCopy;
+                    chatUIManager.addMessage(chatComposite, approveMsg, false);
 
                     // Restart polling since we stopped it when we received the tool request
-                    startPolling(chatComposite, null);
+                    startPolling(chatComposite, null, false); // false = existing chat
                 });
             } catch (Exception ex) {
                 System.out.println("[handleApprove] Exception: " + ex.getMessage());
@@ -603,8 +738,8 @@ public class SampleView extends ViewPart {
         System.out.println("[handleDeny] User denied");
 
         // Check if this is a stale button click (user already sent a new message)
-        if (currentBackupFile == null) {
-            System.out.println("[handleDeny] No active diff to deny (stale button click)");
+        if (!hasPendingApproval) {
+            System.out.println("[handleDeny] No active approval to process (stale button click)");
             if (askContainer != null) {
                 chatUIManager.hideAskButtons(askContainer);
             }
@@ -614,12 +749,18 @@ public class SampleView extends ViewPart {
             return;
         }
 
+        // Get any feedback the user typed (but didn't send)
+        String feedback = inputField.getText().trim();
+
+        // Clear the pending approval flag
+        hasPendingApproval = false;
+
         // Hide buttons immediately
         if (askContainer != null) {
             chatUIManager.hideAskButtons(askContainer);
         }
 
-        // Restore file from backup since changes are denied
+        // Restore file from backup since changes are denied (if this was a file diff)
         final String filePath = currentDiffFilePath;
         final java.io.File backupFile = currentBackupFile;
 
@@ -632,15 +773,24 @@ public class SampleView extends ViewPart {
         currentDiffEditor = null;
         currentDiffFilePath = null;
 
+        // Clear input field since we're using the text as feedback
+        if (!feedback.isEmpty()) {
+            inputField.setText("");
+        }
+
         new Thread(() -> {
             try {
-                String output = clineService.sendAskResponse(false);
+                String output = clineService.sendAskResponse(false, feedback);
                 System.out.println("[handleDeny] Output: " + output);
 
+                final String feedbackCopy = feedback;
                 display.asyncExec(() -> {
-                    chatUIManager.addMessage(chatComposite, "✗ Denied", false);
+                    String denyMsg = feedbackCopy.isEmpty()
+                        ? "✗ Denied"
+                        : "✗ Denied with feedback: " + feedbackCopy;
+                    chatUIManager.addMessage(chatComposite, denyMsg, false);
                     // Restart polling since we stopped it when we received the tool request
-                    startPolling(chatComposite, null);
+                    startPolling(chatComposite, null, false); // false = existing chat
                 });
             } catch (Exception ex) {
                 System.out.println("[handleDeny] Exception: " + ex.getMessage());
@@ -671,6 +821,33 @@ public class SampleView extends ViewPart {
 
 		Composite chatComposite = (Composite) activeTab.getControl();
 
+		// Check if there's a pending approval workflow - if so, auto-deny it
+		if (hasPendingApproval) {
+			System.out.println("[sendMessage] Pending approval detected - auto-denying before sending new message");
+			hasPendingApproval = false;
+
+			// Auto-deny the pending approval (no feedback for auto-deny)
+			new Thread(() -> {
+				try {
+					clineService.sendAskResponse(false, "");
+					System.out.println("[sendMessage] Auto-denied pending approval");
+
+					display.asyncExec(() -> {
+						chatUIManager.addMessage(chatComposite, "⚠ Previous approval request was automatically denied (you sent a new message)", false);
+					});
+				} catch (Exception ex) {
+					System.out.println("[sendMessage] Failed to auto-deny: " + ex.getMessage());
+				}
+			}, "AutoDenyThread").start();
+
+			// Give the auto-deny a moment to process before continuing
+			try {
+				Thread.sleep(500);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+		}
+
 		// Clean up any pending diff state (backup file will be deleted)
 		// This invalidates any pending approve/deny buttons
 		cleanupPreviousDiff();
@@ -694,9 +871,10 @@ public class SampleView extends ViewPart {
 
 				if (output.contains("Message sent successfully")) {
 					System.out.println("[sendMessage] Message sent successfully");
-					pollingService.setLastPrompt(messageCopy);
+					System.out.println("[sendMessage] Diagnostic: messageCopy='" + messageCopy + "', displayedMessageIds.size()=" + displayedMessageIds.size());
+					pollingService.updatePrompt(messageCopy);
 					display.asyncExec(() -> {
-						startPolling(chatComposite, messageCopy);
+						startPolling(chatComposite, messageCopy, false); // false = existing chat
 					});
 				} else if (output.contains("Error:") || output.contains("failed")) {
 					System.out.println("[sendMessage] Error sending message: " + output);
