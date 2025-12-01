@@ -43,6 +43,8 @@ import org.eclipse.swt.widgets.Label;
 import org.eclipse.swt.widgets.Button;
 import org.eclipse.swt.events.SelectionAdapter;
 import org.eclipse.swt.events.SelectionEvent;
+import org.eclipse.swt.events.PaintEvent;
+import org.eclipse.swt.events.PaintListener;
 import java.io.ByteArrayInputStream;
 import java.io.BufferedReader;
 import java.io.File;
@@ -63,6 +65,38 @@ import java.util.List;
  * Service for Eclipse project-related operations
  */
 public class ProjectService {
+
+    /**
+     * State for tracking active diff highlights in editors
+     */
+    private static class DiffHighlightState {
+        final List<CombinedLine> combined;
+        final String documentText;
+        final StyleRange[] styleRanges;
+        final Color greenBg;
+        final Color greenFg;
+        final Color redBg;
+        final Color redFg;
+        PaintListener paintListener;
+        volatile boolean isReapplying = false; // Flag to prevent infinite recursion
+
+        DiffHighlightState(List<CombinedLine> combined, String documentText, StyleRange[] styleRanges,
+                          Color greenBg, Color greenFg, Color redBg, Color redFg) {
+            this.combined = combined;
+            this.documentText = documentText;
+            this.styleRanges = styleRanges;
+            this.greenBg = greenBg;
+            this.greenFg = greenFg;
+            this.redBg = redBg;
+            this.redFg = redFg;
+        }
+    }
+
+    /**
+     * Map to track active diff editors with their highlight state
+     * Key: ITextEditor, Value: DiffHighlightState
+     */
+    private final Map<ITextEditor, DiffHighlightState> activeDiffEditors = new HashMap<>();
 
     /**
      * Gets the root directory of the currently selected project,
@@ -144,6 +178,27 @@ public class ProjectService {
     }
 
     /**
+     * Saves the clean edited version (Cline's actual edits before inserting removed lines).
+     * This is needed for the APPROVE flow - we restore this version when user approves.
+     *
+     * @param filePath the relative path to the file
+     * @param cleanContent the clean content after Cline's edits (no removed lines inserted)
+     * @return the backup file containing the clean version
+     */
+    private File saveCleanEditedVersion(String filePath, String cleanContent) throws Exception {
+        File backupDir = getBackupDirectory();
+        String baseName = new File(filePath).getName();
+        int dotIndex = baseName.lastIndexOf('.');
+        String nameWithoutExt = dotIndex > 0 ? baseName.substring(0, dotIndex) : baseName;
+        String ext = dotIndex > 0 ? baseName.substring(dotIndex) : "";
+
+        File cleanBackup = File.createTempFile(nameWithoutExt + "_clean_", ext, backupDir);
+        Files.write(cleanBackup.toPath(), cleanContent.getBytes());
+        System.out.println("[ProjectService] Saved clean edited version: " + cleanBackup.getAbsolutePath());
+        return cleanBackup;
+    }
+
+    /**
      * Saves a backup of the current file before Cline applies changes.
      *
      * @param filePath the relative path to the file
@@ -190,22 +245,31 @@ public class ProjectService {
     }
 
     /**
+     * Callback interface for diff view - receives editor and BOTH backup files
+     */
+    @FunctionalInterface
+    public interface DiffViewCallback {
+        void accept(IEditorPart editor, File originalBackup, File cleanEditedBackup);
+    }
+
+    /**
      * Shows a diff view by comparing the backup file with the current (modified) file.
      * Cline has already applied the changes, so we compute the diff and show highlights.
      * NEW SIMPLIFIED VERSION - uses single diff computation with line number offsets.
+     * CRITICAL FIX: Maintains TWO backups for proper approve/deny handling.
      *
      * @param filePath the relative path to the file being edited
-     * @param backupFile the backup file with original content
-     * @param onEditorOpened callback invoked with the editor part when opened
+     * @param originalBackup the backup file with original content (for DENY)
+     * @param onEditorOpened callback invoked with editor and BOTH backups
      */
-    public void showDiffViewFromBackup(String filePath, File backupFile, java.util.function.Consumer<IEditorPart> onEditorOpened) {
+    public void showDiffViewFromBackup(String filePath, File originalBackup, DiffViewCallback onEditorOpened) {
         Display display = PlatformUI.getWorkbench().getDisplay();
         display.asyncExec(() -> {
             try {
-                // 1. Read backup content (before)
+                // 1. Read original backup content (before any edits)
                 String beforeContent = "";
-                if (backupFile != null && backupFile.exists()) {
-                    beforeContent = new String(Files.readAllBytes(Paths.get(backupFile.getAbsolutePath())));
+                if (originalBackup != null && originalBackup.exists()) {
+                    beforeContent = new String(Files.readAllBytes(Paths.get(originalBackup.getAbsolutePath())));
                 }
 
                 // 2. Find the workspace file
@@ -215,27 +279,31 @@ public class ProjectService {
                     return;
                 }
 
-                // 3. Read current (modified) file content (after Cline's changes)
+                // 3. Read clean edited content (after Cline's edits, BEFORE we insert removed lines)
                 String afterContent = readWorkspaceFileContent(workspaceFile);
 
                 System.out.println("[ProjectService] Before content: " + beforeContent.split("\n").length + " lines");
                 System.out.println("[ProjectService] After content: " + afterContent.split("\n").length + " lines");
 
-                // 4. Compute diff ONCE using Unix diff
+                // 4. SAVE THE CLEAN EDITED VERSION - needed for APPROVE
+                File cleanEditedBackup = saveCleanEditedVersion(filePath, afterContent);
+                System.out.println("[ProjectService] Saved clean edited backup for approve flow");
+
+                // 5. Compute diff ONCE using Unix diff
                 List<DiffOperation> operations = computeDiffOperations(beforeContent, afterContent);
 
-                // 5. Build combined content with removed lines inserted
+                // 6. Build combined content with removed lines inserted (for highlighting only)
                 String[] afterLines = afterContent.split("\n", -1);
                 List<CombinedLine> combined = buildCombinedContent(afterLines, operations);
                 String combinedContent = combinedLinesToString(combined);
 
-                // 6. Write combined content to workspace file
+                // 7. Write COMBINED content to workspace file (for display only)
                 InputStream combinedStream = new ByteArrayInputStream(combinedContent.getBytes());
                 workspaceFile.setContents(combinedStream, IResource.FORCE, new NullProgressMonitor());
                 workspaceFile.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
                 System.out.println("[ProjectService] Inserted removed lines into file for highlighting");
 
-                // 7. Open editor
+                // 8. Open editor
                 IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
                 if (window == null) {
                     System.err.println("[ProjectService] No active workbench window");
@@ -250,12 +318,12 @@ public class ProjectService {
 
                 IEditorPart editor = IDE.openEditor(page, workspaceFile);
 
-                // 8. Notify callback
+                // 9. Notify callback with editor and BOTH backups
                 if (onEditorOpened != null) {
-                    onEditorOpened.accept(editor);
+                    onEditorOpened.accept(editor, originalBackup, cleanEditedBackup);
                 }
 
-                // 9. Apply highlights using line numbers (NO content matching)
+                // 10. Apply highlights using line numbers (NO content matching)
                 if (editor instanceof ITextEditor) {
                     // Wait for editor to load
                     display.timerExec(500, () -> {
@@ -502,10 +570,30 @@ public class ProjectService {
                     }
 
                     if (styledText != null && !styledText.isDisposed()) {
+                        // Remove PaintListener if it exists
+                        DiffHighlightState state = activeDiffEditors.remove(textEditor);
+                        if (state != null && state.paintListener != null) {
+                            styledText.removePaintListener(state.paintListener);
+                            System.out.println("[ProjectService] Removed PaintListener from editor");
+                            // Dispose colors
+                            if (state.greenBg != null) state.greenBg.dispose();
+                            if (state.greenFg != null) state.greenFg.dispose();
+                            if (state.redBg != null) state.redBg.dispose();
+                            if (state.redFg != null) state.redFg.dispose();
+                        }
+                        
                         // Clear all style ranges by setting an empty array
                         styledText.setStyleRanges(new StyleRange[0]);
                         System.out.println("[ProjectService] Cleared diff highlights from editor");
                     } else {
+                        // Still clean up state even if we can't get the widget
+                        DiffHighlightState state = activeDiffEditors.remove(textEditor);
+                        if (state != null) {
+                            if (state.greenBg != null) state.greenBg.dispose();
+                            if (state.greenFg != null) state.greenFg.dispose();
+                            if (state.redBg != null) state.redBg.dispose();
+                            if (state.redFg != null) state.redFg.dispose();
+                        }
                         System.out.println("[ProjectService] Could not get StyledText widget to clear highlights");
                     }
                 } catch (Exception e) {
@@ -628,15 +716,65 @@ public class ProjectService {
             }
 
             // Apply all styles at once
-            if (!styleRanges.isEmpty()) {
-                finalStyledText.setStyleRanges(styleRanges.toArray(new StyleRange[0]));
-                System.out.println("[ProjectService] Successfully applied " + styleRanges.size() + " highlight styles");
+            StyleRange[] styleRangeArray = styleRanges.toArray(new StyleRange[0]);
+            if (styleRangeArray.length > 0) {
+                finalStyledText.setStyleRanges(styleRangeArray);
+                System.out.println("[ProjectService] Successfully applied " + styleRangeArray.length + " highlight styles");
             } else {
                 System.out.println("[ProjectService] No highlights to apply");
             }
 
+            // Store state for this editor (including colors and style ranges for re-application)
+            DiffHighlightState state = new DiffHighlightState(combined, documentText, styleRangeArray,
+                    greenBg, greenFg, redBg, redFg);
+            
+            // Remove any existing PaintListener for this editor
+            DiffHighlightState existingState = activeDiffEditors.get(textEditor);
+            if (existingState != null && existingState.paintListener != null) {
+                finalStyledText.removePaintListener(existingState.paintListener);
+                // Dispose old colors
+                if (existingState.greenBg != null) existingState.greenBg.dispose();
+                if (existingState.greenFg != null) existingState.greenFg.dispose();
+                if (existingState.redBg != null) existingState.redBg.dispose();
+                if (existingState.redFg != null) existingState.redFg.dispose();
+            }
+
+            // Create PaintListener that re-applies highlights after every paint
+            PaintListener paintListener = new PaintListener() {
+                @Override
+                public void paintControl(PaintEvent e) {
+                    // Re-apply highlights to ensure they persist after syntax highlighting
+                    // Use flag to prevent infinite recursion
+                    if (!finalStyledText.isDisposed() && !state.isReapplying && styleRangeArray.length > 0) {
+                        state.isReapplying = true;
+                        try {
+                            // Re-apply the style ranges asynchronously to avoid recursion
+                            display.asyncExec(() -> {
+                                if (!finalStyledText.isDisposed() && styleRangeArray.length > 0) {
+                                    finalStyledText.setStyleRanges(styleRangeArray);
+                                }
+                                state.isReapplying = false;
+                            });
+                        } catch (Exception ex) {
+                            state.isReapplying = false;
+                        }
+                    }
+                }
+            };
+            
+            // Add PaintListener to re-apply highlights when widget is painted
+            finalStyledText.addPaintListener(paintListener);
+            state.paintListener = paintListener;
+            activeDiffEditors.put(textEditor, state);
+            System.out.println("[ProjectService] Added PaintListener to re-apply diff highlights");
+
             // Dispose colors when widget is disposed
             finalStyledText.addDisposeListener(e -> {
+                // Clean up state when widget is disposed
+                DiffHighlightState disposedState = activeDiffEditors.remove(textEditor);
+                if (disposedState != null && disposedState.paintListener != null) {
+                    finalStyledText.removePaintListener(disposedState.paintListener);
+                }
                 greenBg.dispose();
                 greenFg.dispose();
                 redBg.dispose();

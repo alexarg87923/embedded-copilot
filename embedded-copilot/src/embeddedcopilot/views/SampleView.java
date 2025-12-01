@@ -64,7 +64,8 @@ public class SampleView extends ViewPart {
     private int chatCounter = 0;
     private org.eclipse.ui.IEditorPart currentDiffEditor = null; // Track diff editor (real workspace file)
     private String currentDiffFilePath = null; // Track the file path being edited
-    private java.io.File currentBackupFile = null; // Track backup file for rollback
+    private java.io.File currentOriginalBackup = null; // Original file backup (for DENY - restore to pre-edit state)
+    private java.io.File currentCleanEditedBackup = null; // Clean edited backup (for APPROVE - Cline's actual edits)
     private volatile boolean hasPendingApproval = false; // Track if there's ANY pending approval (file diff or command)
     private volatile boolean alreadyAutoApproved = false; // Track if we already auto-approved (to prevent double approval)
     private Set<String> displayedMessageIds = new HashSet<>(); // Track displayed messages to prevent duplicates
@@ -491,11 +492,10 @@ public class SampleView extends ViewPart {
 									// Auto-approve in background, save backup, wait for Cline to apply, then show diff
 									new Thread(() -> {
 										try {
-											// Save backup first
-											File backupFile = projectService.saveBackup(filePath);
-											if (backupFile != null) {
-												currentBackupFile = backupFile;
-												System.out.println("[SampleView] Saved backup before auto-approving: " + filePath);
+											// Save original backup first
+											File originalBackup = projectService.saveBackup(filePath);
+											if (originalBackup != null) {
+												System.out.println("[SampleView] Saved original backup before auto-approving: " + filePath);
 											}
 
 											// Auto-approve (Cline will apply changes)
@@ -508,10 +508,16 @@ public class SampleView extends ViewPart {
 
 											// Now show diff view (file should be modified by Cline now)
 											display.asyncExec(() -> {
-												projectService.showDiffViewFromBackup(filePath, backupFile, (editor) -> {
-													// Track the opened editor
-													currentDiffEditor = editor;
-												});
+												projectService.showDiffViewFromBackup(filePath, originalBackup,
+													(editor, origBackup, cleanBackup) -> {
+														// Track the opened editor and BOTH backups
+														currentDiffEditor = editor;
+														currentOriginalBackup = origBackup;
+														currentCleanEditedBackup = cleanBackup;
+														System.out.println("[SampleView] Tracking backups - Original: " +
+															(origBackup != null ? origBackup.getName() : "null") +
+															", Clean: " + (cleanBackup != null ? cleanBackup.getName() : "null"));
+													});
 											});
 										} catch (Exception e) {
 											System.err.println("[SampleView] Error auto-approving and showing diff: " + e.getMessage());
@@ -616,13 +622,21 @@ public class SampleView extends ViewPart {
      */
     private void cleanupPreviousDiff() {
         // If there's a pending diff, clean it up
-        if (currentBackupFile != null) {
-            // Delete backup file since user didn't approve or deny
-            if (currentBackupFile.exists()) {
-                currentBackupFile.delete();
-                System.out.println("[SampleView] Deleted abandoned backup file");
+        if (currentOriginalBackup != null) {
+            // Delete original backup file since user didn't approve or deny
+            if (currentOriginalBackup.exists()) {
+                currentOriginalBackup.delete();
+                System.out.println("[SampleView] Deleted abandoned original backup file");
             }
-            currentBackupFile = null;
+            currentOriginalBackup = null;
+        }
+        if (currentCleanEditedBackup != null) {
+            // Delete clean edited backup file since user didn't approve or deny
+            if (currentCleanEditedBackup.exists()) {
+                currentCleanEditedBackup.delete();
+                System.out.println("[SampleView] Deleted abandoned clean edited backup file");
+            }
+            currentCleanEditedBackup = null;
         }
         currentDiffEditor = null;
         currentDiffFilePath = null;
@@ -661,12 +675,14 @@ public class SampleView extends ViewPart {
             chatUIManager.hideAskButtons(askContainer);
         }
 
-        // Save file path and backup file before clearing them (needed for restore)
+        // Save file path and backup files before clearing them (needed for restore)
         final String filePath = currentDiffFilePath;
-        final java.io.File backupFile = currentBackupFile;
+        final java.io.File cleanEditedBackup = currentCleanEditedBackup;
+        final java.io.File originalBackup = currentOriginalBackup;
         
         // Clear state immediately (restore will happen in thread)
-        currentBackupFile = null;
+        currentOriginalBackup = null;
+        currentCleanEditedBackup = null;
         currentDiffEditor = null;
         currentDiffFilePath = null;
 
@@ -677,17 +693,26 @@ public class SampleView extends ViewPart {
 
         new Thread(() -> {
             try {
-                // Changes are already applied by Cline (we auto-approved), so just clean up
-                // Delete backup file since changes are approved
-                if (backupFile != null && backupFile.exists()) {
-                    backupFile.delete();
-                    System.out.println("[SampleView] Deleted backup file (changes approved)");
+                // Restore the clean edited version (Cline's actual edits without removed lines for highlighting)
+                if (filePath != null && cleanEditedBackup != null) {
+                    projectService.restoreFromBackup(filePath, cleanEditedBackup);
+                    System.out.println("[SampleView] Restored clean edited version after approve");
                 }
                 
                 // Clear diff highlights from the editor
                 if (filePath != null) {
                     projectService.clearDiffHighlights(filePath);
                     System.out.println("[SampleView] Cleared diff highlights after approve");
+                }
+                
+                // Clean up both backup files since changes are approved
+                if (cleanEditedBackup != null && cleanEditedBackup.exists()) {
+                    cleanEditedBackup.delete();
+                    System.out.println("[SampleView] Deleted clean edited backup file (changes approved)");
+                }
+                if (originalBackup != null && originalBackup.exists()) {
+                    originalBackup.delete();
+                    System.out.println("[SampleView] Deleted original backup file (changes approved)");
                 }
                 
                 // If we already auto-approved, don't send another approve (would be double approval)
@@ -760,18 +785,22 @@ public class SampleView extends ViewPart {
             chatUIManager.hideAskButtons(askContainer);
         }
 
-        // Restore file from backup since changes are denied (if this was a file diff)
+        // Restore file from original backup since changes are denied (if this was a file diff)
         final String filePath = currentDiffFilePath;
-        final java.io.File backupFile = currentBackupFile;
+        final java.io.File originalBackup = currentOriginalBackup;
+        final java.io.File cleanEditedBackup = currentCleanEditedBackup;
 
-        if (filePath != null && backupFile != null) {
-            projectService.restoreFromBackup(filePath, backupFile);
-            System.out.println("[SampleView] Restoring file from backup (changes denied)");
-        }
-
-        currentBackupFile = null;
+        // Clear state immediately (restore will happen synchronously)
+        currentOriginalBackup = null;
+        currentCleanEditedBackup = null;
         currentDiffEditor = null;
         currentDiffFilePath = null;
+
+        // Restore the original version (pre-edit state)
+        if (filePath != null && originalBackup != null) {
+            projectService.restoreFromBackup(filePath, originalBackup);
+            System.out.println("[SampleView] Restoring file from original backup (changes denied)");
+        }
 
         // Clear input field since we're using the text as feedback
         if (!feedback.isEmpty()) {
@@ -780,6 +809,16 @@ public class SampleView extends ViewPart {
 
         new Thread(() -> {
             try {
+                // Clean up both backup files since changes are denied
+                if (originalBackup != null && originalBackup.exists()) {
+                    originalBackup.delete();
+                    System.out.println("[SampleView] Deleted original backup file (changes denied)");
+                }
+                if (cleanEditedBackup != null && cleanEditedBackup.exists()) {
+                    cleanEditedBackup.delete();
+                    System.out.println("[SampleView] Deleted clean edited backup file (changes denied)");
+                }
+                
                 String output = clineService.sendAskResponse(false, feedback);
                 System.out.println("[handleDeny] Output: " + output);
 
