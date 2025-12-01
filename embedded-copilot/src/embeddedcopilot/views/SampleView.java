@@ -697,9 +697,17 @@ public class SampleView extends ViewPart {
                 if (filePath != null && cleanEditedBackup != null) {
                     projectService.restoreFromBackup(filePath, cleanEditedBackup);
                     System.out.println("[SampleView] Restored clean edited version after approve");
+
+                    // Give the restore operation time to complete before clearing highlights
+                    // This ensures the document is updated first
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
-                
-                // Clear diff highlights from the editor
+
+                // Clear diff highlights from the editor (will restore syntax highlighting)
                 if (filePath != null) {
                     projectService.clearDiffHighlights(filePath);
                     System.out.println("[SampleView] Cleared diff highlights after approve");

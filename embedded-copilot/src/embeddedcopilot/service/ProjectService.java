@@ -73,6 +73,7 @@ public class ProjectService {
         final List<CombinedLine> combined;
         final String documentText;
         final StyleRange[] styleRanges;
+        final StyleRange[] originalSyntaxHighlighting; // Store original syntax highlighting
         final Color greenBg;
         final Color greenFg;
         final Color redBg;
@@ -81,10 +82,12 @@ public class ProjectService {
         volatile boolean isReapplying = false; // Flag to prevent infinite recursion
 
         DiffHighlightState(List<CombinedLine> combined, String documentText, StyleRange[] styleRanges,
+                          StyleRange[] originalSyntaxHighlighting,
                           Color greenBg, Color greenFg, Color redBg, Color redFg) {
             this.combined = combined;
             this.documentText = documentText;
             this.styleRanges = styleRanges;
+            this.originalSyntaxHighlighting = originalSyntaxHighlighting;
             this.greenBg = greenBg;
             this.greenFg = greenFg;
             this.redBg = redBg;
@@ -442,7 +445,7 @@ public class ProjectService {
                     workspaceFile.refreshLocal(IResource.DEPTH_ZERO, new NullProgressMonitor());
                     System.out.println("[ProjectService] Refreshed workspace file after restore: " + filePath);
 
-                    // Clear diff highlights from the editor if it's open (only if file still exists)
+                    // FIXED: Force editor to reload from disk (avoids conflict dialog)
                     if (workspaceFile.exists()) {
                         IWorkbenchWindow window = PlatformUI.getWorkbench().getActiveWorkbenchWindow();
                         if (window != null) {
@@ -450,7 +453,20 @@ public class ProjectService {
                             if (page != null) {
                                 IEditorPart editor = IDE.openEditor(page, workspaceFile);
                                 if (editor instanceof ITextEditor) {
-                                    clearDiffHighlights((ITextEditor) editor);
+                                    ITextEditor textEditor = (ITextEditor) editor;
+
+                                    // Force editor to revert to saved file content (reloads from disk)
+                                    // This avoids the "file modified externally" dialog
+                                    try {
+                                        textEditor.doRevertToSaved();
+                                        System.out.println("[ProjectService] Reverted editor to saved file content (reloaded from disk)");
+                                    } catch (Exception ex) {
+                                        System.err.println("[ProjectService] Error reverting editor to saved: " + ex.getMessage());
+                                        ex.printStackTrace();
+                                    }
+
+                                    // Clear diff highlights (which will now restore syntax highlighting)
+                                    clearDiffHighlights(textEditor);
                                 }
                             }
                         }
@@ -581,10 +597,29 @@ public class ProjectService {
                             if (state.redBg != null) state.redBg.dispose();
                             if (state.redFg != null) state.redFg.dispose();
                         }
-                        
-                        // Clear all style ranges by setting an empty array
-                        styledText.setStyleRanges(new StyleRange[0]);
-                        System.out.println("[ProjectService] Cleared diff highlights from editor");
+
+                        // FIXED: Restore original syntax highlighting instead of clearing everything
+                        if (state != null && state.originalSyntaxHighlighting != null && state.originalSyntaxHighlighting.length > 0) {
+                            styledText.setStyleRanges(state.originalSyntaxHighlighting);
+                            System.out.println("[ProjectService] Restored " + state.originalSyntaxHighlighting.length + " original syntax highlighting StyleRanges");
+                        } else {
+                            // Fallback: Clear and trigger Eclipse to re-apply syntax highlighting
+                            // This happens if we somehow didn't capture original styles
+                            System.out.println("[ProjectService] No original syntax highlighting captured, triggering refresh");
+                            styledText.setStyleRanges(new StyleRange[0]);
+
+                            // Trigger Eclipse's syntax highlighter to re-run by updating the document
+                            try {
+                                IDocument doc = textEditor.getDocumentProvider().getDocument(textEditor.getEditorInput());
+                                if (doc != null) {
+                                    String content = doc.get();
+                                    doc.set(content); // This triggers presentation reconciler
+                                    System.out.println("[ProjectService] Triggered syntax highlighting refresh");
+                                }
+                            } catch (Exception ex) {
+                                System.err.println("[ProjectService] Failed to trigger syntax highlighting: " + ex.getMessage());
+                            }
+                        }
                     } else {
                         // Still clean up state even if we can't get the widget
                         DiffHighlightState state = activeDiffEditors.remove(textEditor);
@@ -717,6 +752,12 @@ public class ProjectService {
 
             // Apply all styles at once
             StyleRange[] styleRangeArray = styleRanges.toArray(new StyleRange[0]);
+
+            // Capture existing syntax highlighting BEFORE we overwrite it with diff highlights
+            // This allows us to restore syntax highlighting when clearing diff highlights
+            StyleRange[] originalSyntaxHighlighting = finalStyledText.getStyleRanges();
+            System.out.println("[ProjectService] Captured " + originalSyntaxHighlighting.length + " original syntax highlighting StyleRanges");
+
             if (styleRangeArray.length > 0) {
                 finalStyledText.setStyleRanges(styleRangeArray);
                 System.out.println("[ProjectService] Successfully applied " + styleRangeArray.length + " highlight styles");
@@ -726,6 +767,7 @@ public class ProjectService {
 
             // Store state for this editor (including colors and style ranges for re-application)
             DiffHighlightState state = new DiffHighlightState(combined, documentText, styleRangeArray,
+                    originalSyntaxHighlighting,
                     greenBg, greenFg, redBg, redFg);
             
             // Remove any existing PaintListener for this editor
